@@ -1,0 +1,29 @@
+# Python Dependencies
+
+# Core API
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+
+# Database
+supabase
+numpy
+
+# LLM & Embeddings
+openai
+langchain-core
+langchain-openai
+langgraph
+
+# Document Processing
+PyMuPDF
+spacy
+tiktoken
+python-docx
+python-multipart
+
+# Web Scraping
+scrapy
+trafilatura
+requests
