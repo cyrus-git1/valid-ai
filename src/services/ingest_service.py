@@ -7,6 +7,8 @@ No FastAPI / HTTP coupling — call from a router, background task, or worker.
 Supported source types
 ----------------------
   pdf / docx  — file_bytes + file_name → upload to bucket → chunk → embed → store
+  xlsx / xls  — file_bytes + file_name → upload to bucket → pandas parse → chunk → embed → store
+  vtt         — file_bytes + file_name → upload to bucket → parse WebVTT → chunk → embed → store
   web         — web_url → scrape subprocess → chunk → embed → store
 
 Import
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 JsonDict = Dict[str, Any]
 PDF_BUCKET = "pdf"
-_SUPPORTED_FILE_TYPES = {"pdf", "docx"}
+_SUPPORTED_FILE_TYPES = {"pdf", "docx", "vtt", "xlsx", "xls"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -126,11 +128,11 @@ class IngestService:
         }
         res = (
             self.sb.table("documents")
-            .upsert(payload, on_conflict="tenant_id,client_id,source_uri")
+            .insert(payload)
             .execute()
         )
         if not res.data:
-            raise RuntimeError("documents upsert returned no rows")
+            raise RuntimeError("documents insert returned no rows")
         return UUID(res.data[0]["id"])
 
     # ── Embedding ─────────────────────────────────────────────────────────────
@@ -258,7 +260,7 @@ class IngestService:
         file_type = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
 
         if file_type not in _SUPPORTED_FILE_TYPES:
-            raise ValueError(f"Unsupported file type '{file_type}'. Only pdf and docx are supported.")
+            raise ValueError(f"Unsupported file type '{file_type}'. Supported: pdf, docx, vtt, xlsx.")
 
         storage_path = self.upload_to_bucket(inp.file_bytes, file_name)
         source_uri = self._storage_uri(PDF_BUCKET, storage_path)

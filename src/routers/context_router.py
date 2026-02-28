@@ -39,20 +39,23 @@ def _run_context_build(job_id: str, req: ContextBuildRequest) -> None:
             "client_id": str(req.client_id),
             "docs": req.context.docs,
             "weblinks": req.context.weblinks,
+            "transcripts": req.context.transcripts,
             "client_profile": req.client_profile.model_dump(),
         })
 
         ingest_results = result.get("ingest_results", [])
         kg_result = result.get("kg_build_result", {})
 
-        doc_count = sum(1 for r in ingest_results if r.get("source_type") != "web")
+        doc_count = sum(1 for r in ingest_results if r.get("source_type") not in ("web", "vtt"))
         web_count = sum(1 for r in ingest_results if r.get("source_type") == "web")
+        vtt_count = sum(1 for r in ingest_results if r.get("source_type") == "vtt")
         total_chunks = sum(r.get("chunks_upserted", 0) for r in ingest_results)
 
         _jobs[job_id] = {
             "status": result.get("status", "complete"),
             "documents_ingested": doc_count,
             "weblinks_ingested": web_count,
+            "transcripts_ingested": vtt_count,
             "total_chunks": total_chunks,
             "kg_nodes_upserted": kg_result.get("nodes_upserted", 0),
             "kg_edges_upserted": kg_result.get("edges_upserted", 0),
@@ -71,11 +74,12 @@ def build_context(
     background_tasks: BackgroundTasks,
 ) -> ContextBuildResponse:
     """
-    Build a client's full knowledge base from documents and websites.
+    Build a client's full knowledge base from documents, websites, and transcripts.
 
     Accepts a unified JSON payload with:
       - docs: list of file paths to PDFs/DOCX files
       - weblinks: list of URLs to scrape
+      - transcripts: list of file paths to WebVTT (.vtt) Daily.js transcripts
       - client_profile: industry, headcount, demographic info
 
     Returns 202 immediately with a job_id. The full pipeline

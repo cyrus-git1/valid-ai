@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional
 import io
 
 import fitz
+import pandas as pd
 import spacy
 import tiktoken
 from docx import Document
@@ -189,17 +190,216 @@ def docx_bytes_to_chunks(docx_bytes: bytes) -> List[Dict[str, Any]]:
     return chunk_pages_spacy_token_aware(pages)
 
 
+def extract_pages_from_xlsx_bytes(
+    xlsx_bytes: bytes,
+    rows_per_page: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Read an Excel workbook with pandas and convert to pseudo-pages.
+
+    Strategy:
+      - Each sheet is read independently.
+      - Rows are converted to a readable text representation (one line per row
+        with column headers as keys).
+      - Rows are grouped into pseudo-pages of ``rows_per_page`` each so the
+        downstream chunker can apply the same sentence / token-aware logic.
+      - Sheets are processed in order; page numbering is continuous across
+        all sheets.
+    """
+    xls = pd.ExcelFile(io.BytesIO(xlsx_bytes))
+    pages: List[Dict[str, Any]] = []
+    page_no = 1
+
+    for sheet_name in xls.sheet_names:
+        df = xls.parse(sheet_name, dtype=str).fillna("")
+
+        if df.empty:
+            continue
+
+        columns = [str(c) for c in df.columns]
+        buf: List[str] = []
+        buf.append(f"[Sheet: {sheet_name}]")
+
+        for row_idx, row in df.iterrows():
+            parts = [
+                f"{col}: {val}" for col, val in zip(columns, row)
+                if str(val).strip()
+            ]
+            if parts:
+                buf.append(" | ".join(parts))
+
+            if len(buf) >= rows_per_page:
+                text = _normalize_text("\n".join(buf))
+                if text:
+                    pages.append({"page": page_no, "text": text})
+                    page_no += 1
+                buf = [f"[Sheet: {sheet_name} (cont.)]"]
+
+        # Flush remainder for this sheet
+        if buf:
+            text = _normalize_text("\n".join(buf))
+            if text:
+                pages.append({"page": page_no, "text": text})
+                page_no += 1
+
+    return pages
+
+
+def xlsx_bytes_to_chunks(xlsx_bytes: bytes) -> List[Dict[str, Any]]:
+    """Parse Excel bytes and return token-aware chunks."""
+    pages = extract_pages_from_xlsx_bytes(xlsx_bytes)
+    return chunk_pages_spacy_token_aware(pages)
+
+
 def document_bytes_to_chunks(file_bytes: bytes, file_type: str) -> List[Dict[str, Any]]:
     """
-    file_type: "pdf" or "docx"
+    file_type: "pdf", "docx", "vtt", or "xlsx"
     """
     ft = file_type.lower().strip(".")
     if ft == "pdf":
         return pdf_bytes_to_chunks(file_bytes)
     if ft == "docx":
         return docx_bytes_to_chunks(file_bytes)
+    if ft == "vtt":
+        return vtt_bytes_to_chunks(file_bytes)
+    if ft in ("xlsx", "xls"):
+        return xlsx_bytes_to_chunks(file_bytes)
     raise ValueError(f"Unsupported file_type: {file_type}")
 
+
+# ─── WebVTT (Daily.js transcript) ────────────────────────────────────────────
+
+_VTT_TS_RE = re.compile(
+    r"(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{3})"
+)
+
+
+def _parse_vtt_timestamp(ts: str) -> float:
+    """Convert a WebVTT timestamp like '00:01:23.456' to seconds."""
+    m = _VTT_TS_RE.match(ts.strip())
+    if not m:
+        raise ValueError(f"Invalid VTT timestamp: {ts!r}")
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2))
+    seconds = int(m.group(3))
+    millis = int(m.group(4))
+    return hours * 3600 + minutes * 60 + seconds + millis / 1000
+
+
+def parse_vtt(vtt_text: str) -> List[Dict[str, Any]]:
+    """
+    Parse a WebVTT string into a list of cue dicts.
+
+    Each cue dict has keys: index, start, end, speaker (optional), text.
+    Handles the ``<v Speaker>`` voice tag convention used by Daily.js.
+    """
+    lines = vtt_text.strip().splitlines()
+    cues: List[Dict[str, Any]] = []
+    i = 0
+
+    # Skip the WEBVTT header and any metadata lines
+    while i < len(lines) and not re.match(r"\d{2}:\d{2}", lines[i]):
+        i += 1
+
+    cue_index = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Skip blank lines
+        if not line:
+            i += 1
+            continue
+
+        # Skip numeric cue identifiers
+        if line.isdigit():
+            i += 1
+            continue
+
+        # Expect a timestamp line: 00:00:01.000 --> 00:00:04.500
+        if "-->" in line:
+            parts = line.split("-->")
+            start = _parse_vtt_timestamp(parts[0])
+            # Strip position/alignment metadata after the end timestamp
+            end_raw = parts[1].strip().split()[0]
+            end = _parse_vtt_timestamp(end_raw)
+
+            # Collect cue text lines until blank line or end of file
+            i += 1
+            text_lines: List[str] = []
+            while i < len(lines) and lines[i].strip():
+                text_lines.append(lines[i].strip())
+                i += 1
+
+            raw_text = " ".join(text_lines)
+
+            # Extract speaker from <v SpeakerName> tag
+            speaker: Optional[str] = None
+            voice_match = re.match(r"<v\s+([^>]+)>(.+)", raw_text)
+            if voice_match:
+                speaker = voice_match.group(1).strip()
+                raw_text = voice_match.group(2).strip()
+
+            # Strip remaining VTT tags like </v>
+            clean_text = re.sub(r"</?[^>]+>", "", raw_text).strip()
+
+            if clean_text:
+                cues.append({
+                    "index": cue_index,
+                    "start": start,
+                    "end": end,
+                    "speaker": speaker,
+                    "text": clean_text,
+                })
+                cue_index += 1
+        else:
+            i += 1
+
+    return cues
+
+
+def vtt_cues_to_pages(
+    cues: List[Dict[str, Any]],
+    window_seconds: float = 120.0,
+) -> List[Dict[str, Any]]:
+    """
+    Group VTT cues into pseudo-pages by time window.
+
+    Each "page" covers ``window_seconds`` of transcript. Speaker labels are
+    prepended so the chunker preserves attribution context.
+    """
+    if not cues:
+        return []
+
+    pages: List[Dict[str, Any]] = []
+    page_no = 1
+    buf: List[str] = []
+    window_start = cues[0]["start"]
+
+    for cue in cues:
+        if cue["start"] - window_start >= window_seconds and buf:
+            pages.append({"page": page_no, "text": _normalize_text("\n".join(buf))})
+            page_no += 1
+            buf = []
+            window_start = cue["start"]
+
+        prefix = f"[{cue['speaker']}]: " if cue.get("speaker") else ""
+        buf.append(f"{prefix}{cue['text']}")
+
+    if buf:
+        pages.append({"page": page_no, "text": _normalize_text("\n".join(buf))})
+
+    return pages
+
+
+def vtt_bytes_to_chunks(vtt_bytes: bytes) -> List[Dict[str, Any]]:
+    """Parse WebVTT bytes and return token-aware chunks."""
+    vtt_text = vtt_bytes.decode("utf-8", errors="replace")
+    cues = parse_vtt(vtt_text)
+    pages = vtt_cues_to_pages(cues)
+    return chunk_pages_spacy_token_aware(pages)
+
+
+# ─── Web scraped content ─────────────────────────────────────────────────────
 
 def web_scraped_json_to_pages(json_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """

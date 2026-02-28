@@ -1,4 +1,3 @@
-"""Pydantic models for the /context router and context build workflow."""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -44,6 +43,7 @@ class ClientProfile(BaseModel):
 class ContextSources(BaseModel):
     docs: List[str] = Field(default_factory=list, description="File paths to PDFs/DOCX")
     weblinks: List[str] = Field(default_factory=list, description="URLs to scrape")
+    transcripts: List[str] = Field(default_factory=list, description="File paths to WebVTT (.vtt) transcripts from Daily.js sessions")
 
 
 class ContextBuildRequest(BaseModel):
@@ -60,6 +60,7 @@ class ContextBuildResponse(BaseModel):
     status: str
     documents_ingested: int = 0
     weblinks_ingested: int = 0
+    transcripts_ingested: int = 0
     total_chunks: int = 0
     kg_nodes_upserted: int = 0
     kg_edges_upserted: int = 0

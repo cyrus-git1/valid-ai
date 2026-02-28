@@ -21,7 +21,14 @@
       "Bash(\"venv\\\\Scripts\\\\python.exe\" -c:*)",
       "Bash(\"venv\\\\Scripts\\\\python.exe\" -c \"from src.main import app\")",
       "Bash(\"venv\\\\Scripts\\\\python.exe\" test_context_summary.py)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(powershell -Command \"Test-Path ''C:\\\\Users\\\\cyrus\\\\Downloads\\\\POCA_1_Year_Strategy.docx''\")",
+      "Bash(powershell -Command:*)",
+      "Bash(python -m uvicorn:*)",
+      "Bash(pip install:*)",
+      "Bash(timeout:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(git add:*)"
     ]
   }
 }

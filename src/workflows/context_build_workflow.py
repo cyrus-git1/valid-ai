@@ -47,6 +47,7 @@ class ContextBuildState(TypedDict, total=False):
     client_id: str
     docs: List[str]
     weblinks: List[str]
+    transcripts: List[str]
     client_profile: Dict[str, Any]
     ingest_results: List[Dict[str, Any]]
     kg_build_result: Dict[str, Any]
@@ -69,9 +70,10 @@ def validate_input(state: ContextBuildState) -> ContextBuildState:
 
     docs = state.get("docs", [])
     weblinks = state.get("weblinks", [])
+    transcripts = state.get("transcripts", [])
 
-    if not docs and not weblinks:
-        return {**state, "status": "failed", "error": "At least one doc or weblink required"}
+    if not docs and not weblinks and not transcripts:
+        return {**state, "status": "failed", "error": "At least one doc, weblink, or transcript required"}
 
     # Validate doc paths exist
     valid_docs = []
@@ -86,10 +88,23 @@ def validate_input(state: ContextBuildState) -> ContextBuildState:
         else:
             warnings.append(f"File not found: {doc_path}")
 
+    # Validate transcript paths exist
+    valid_transcripts = []
+    for vtt_path in transcripts:
+        p = Path(vtt_path)
+        if p.exists():
+            if p.suffix.lower() == ".vtt":
+                valid_transcripts.append(vtt_path)
+            else:
+                warnings.append(f"Skipping non-VTT transcript: {vtt_path}")
+        else:
+            warnings.append(f"Transcript not found: {vtt_path}")
+
     return {
         **state,
         "docs": valid_docs,
         "weblinks": weblinks,
+        "transcripts": valid_transcripts,
         "warnings": warnings,
         "status": "validated",
     }
@@ -125,6 +140,28 @@ def ingest_sources(state: ContextBuildState) -> ContextBuildState:
         except Exception as e:
             warnings.append(f"Failed to ingest {doc_path}: {e}")
             logger.error("Ingest failed for %s: %s", doc_path, e)
+
+    # Ingest transcripts (.vtt)
+    for vtt_path in state.get("transcripts", []):
+        try:
+            p = Path(vtt_path)
+            result = svc.ingest(IngestInput(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                file_bytes=p.read_bytes(),
+                file_name=p.name,
+                title=p.stem,
+            ))
+            ingest_results.append({
+                "source": vtt_path,
+                "source_type": result.source_type,
+                "document_id": str(result.document_id),
+                "chunks_upserted": result.chunks_upserted,
+            })
+            warnings.extend(result.warnings)
+        except Exception as e:
+            warnings.append(f"Failed to ingest transcript {vtt_path}: {e}")
+            logger.error("Transcript ingest failed for %s: %s", vtt_path, e)
 
     # Ingest weblinks
     for url in state.get("weblinks", []):

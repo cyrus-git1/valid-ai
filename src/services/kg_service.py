@@ -81,7 +81,7 @@ class KGService:
         self,
         *,
         tenant_id: UUID,
-        client_id: UUID,
+        client_id: Optional[UUID],
         node_key: str,
         type_value: str,
         name: str,
@@ -98,7 +98,7 @@ class KGService:
             "upsert_kg_node",
             {
                 "p_tenant_id": str(tenant_id),
-                "p_client_id": str(client_id),
+                "p_client_id": str(client_id) if client_id else None,
                 "p_node_key": node_key,
                 "p_type": type_value,
                 "p_name": name,
@@ -114,7 +114,7 @@ class KGService:
         self,
         *,
         tenant_id: UUID,
-        client_id: UUID,
+        client_id: Optional[UUID],
         src_id: UUID,
         dst_id: UUID,
         rel_type: str,
@@ -125,7 +125,7 @@ class KGService:
             "upsert_kg_edge",
             {
                 "p_tenant_id": str(tenant_id),
-                "p_client_id": str(client_id),
+                "p_client_id": str(client_id) if client_id else None,
                 "p_src_id": str(src_id),
                 "p_dst_id": str(dst_id),
                 "p_rel_type": rel_type,
@@ -141,7 +141,7 @@ class KGService:
         self,
         *,
         tenant_id: UUID,
-        client_id: UUID,
+        client_id: Optional[UUID],
         edge_stale_days: int = 90,
         node_stale_days: int = 180,
         min_degree: int = 3,
@@ -152,7 +152,7 @@ class KGService:
             "prune_kg",
             {
                 "p_tenant_id": str(tenant_id),
-                "p_client_id": str(client_id),
+                "p_client_id": str(client_id) if client_id else None,
                 "p_edge_stale_days": edge_stale_days,
                 "p_node_stale_days": node_stale_days,
                 "p_min_degree": min_degree,
@@ -168,20 +168,20 @@ class KGService:
         self,
         *,
         tenant_id: UUID,
-        client_id: UUID,
+        client_id: Optional[UUID] = None,
         document_id: Optional[UUID] = None,
         limit: int = 500,
         offset: int = 0,
     ) -> List[JsonDict]:
         """
         Server-side JOIN via SQL RPC (09b_fetch_chunks_rpc.sql).
-        Returns chunks that have embeddings, scoped to tenant + client.
+        Returns chunks that have embeddings, scoped to tenant (+ optional client).
         """
         res = self.sb.rpc(
             "fetch_chunks_with_embeddings",
             {
                 "p_tenant_id": str(tenant_id),
-                "p_client_id": str(client_id),
+                "p_client_id": str(client_id) if client_id else None,
                 "p_document_id": str(document_id) if document_id else None,
                 "p_limit": limit,
                 "p_offset": offset,
@@ -193,7 +193,7 @@ class KGService:
         self,
         *,
         tenant_id: UUID,
-        client_id: UUID,
+        client_id: Optional[UUID],
         document_id: Optional[UUID],
         cfg: KGBuildConfig,
     ) -> List[JsonDict]:
@@ -220,13 +220,28 @@ class KGService:
             offset += cfg.batch_size
         return chunks
 
+    # ── Resolve client_id from document ────────────────────────────────────────
+
+    def _resolve_client_id(self, document_id: str) -> Optional[UUID]:
+        """Look up the client_id for a document."""
+        res = (
+            self.sb.table("documents")
+            .select("client_id")
+            .eq("id", document_id)
+            .limit(1)
+            .execute()
+        )
+        if res.data and res.data[0].get("client_id"):
+            return UUID(res.data[0]["client_id"])
+        return None
+
     # ── KG build ──────────────────────────────────────────────────────────────
 
     def build_kg_from_chunk_embeddings(
         self,
         *,
         tenant_id: UUID,
-        client_id: UUID,
+        client_id: Optional[UUID] = None,
         document_id: Optional[UUID] = None,
         config: Optional[KGBuildConfig] = None,
     ) -> Dict[str, Any]:
@@ -236,6 +251,10 @@ class KGService:
           2. Filter to valid 1536-dim embeddings
           3. Upsert one KG node per chunk
           4. Draw cosine-similarity edges between nodes above threshold
+
+        When client_id is None, all clients for the tenant are processed.
+        The actual client_id is resolved from each chunk's document for
+        node/edge upserts.
 
         Returns a summary dict with counts.
         """
@@ -265,6 +284,14 @@ class KGService:
 
         for c in all_chunks:
             emb = c.get("embedding")
+            # pgvector returns embeddings as a string like "[0.1,0.2,...]"
+            if isinstance(emb, str):
+                try:
+                    import json
+                    emb = json.loads(emb)
+                    c["embedding"] = emb
+                except (json.JSONDecodeError, ValueError):
+                    pass
             if isinstance(emb, list) and len(emb) == _EMBEDDING_DIM:
                 valid_chunks.append(c)
                 valid_embeddings.append(emb)
@@ -289,15 +316,31 @@ class KGService:
 
         vectors = np.array(valid_embeddings, dtype=np.float32)
 
+        # Cache: document_id → client_id (resolved once per document)
+        _doc_client_cache: Dict[str, Optional[UUID]] = {}
+
+        def _get_client_id_for_chunk(chunk: JsonDict) -> Optional[UUID]:
+            """Return the client_id to use for a chunk's node/edge upserts."""
+            if client_id is not None:
+                return client_id
+            doc_id = chunk.get("document_id")
+            if doc_id not in _doc_client_cache:
+                _doc_client_cache[doc_id] = self._resolve_client_id(doc_id)
+            return _doc_client_cache[doc_id]
+
         # 1) Upsert chunk nodes
         chunk_id_to_node_id: Dict[str, UUID] = {}
+        chunk_id_to_client_id: Dict[str, Optional[UUID]] = {}
         nodes_upserted = 0
 
         for c in valid_chunks:
             chunk_id = c["id"]
+            resolved_cid = _get_client_id_for_chunk(c)
+            chunk_id_to_client_id[chunk_id] = resolved_cid
+
             node_id = self.upsert_node(
                 tenant_id=tenant_id,
-                client_id=client_id,
+                client_id=resolved_cid,
                 node_key=f"chunk:{chunk_id}",
                 type_value="Chunk",
                 name=f"Chunk {c.get('chunk_index', 0)}",
@@ -328,13 +371,17 @@ class KGService:
                 continue
 
             cand_sorted = cand_idx[np.argsort(sims_i[cand_idx])[::-1]][: cfg.max_edges_per_chunk]
-            src_node_id = chunk_id_to_node_id[valid_chunks[i]["id"]]
+            src_chunk_id = valid_chunks[i]["id"]
+            src_node_id = chunk_id_to_node_id[src_chunk_id]
+            src_client_id = chunk_id_to_client_id[src_chunk_id]
 
             for j in cand_sorted:
-                dst_node_id = chunk_id_to_node_id[valid_chunks[j]["id"]]
+                dst_chunk_id = valid_chunks[j]["id"]
+                dst_node_id = chunk_id_to_node_id[dst_chunk_id]
+                # Use the source chunk's client_id for the edge
                 self.upsert_edge(
                     tenant_id=tenant_id,
-                    client_id=client_id,
+                    client_id=src_client_id,
                     src_id=src_node_id,
                     dst_id=dst_node_id,
                     rel_type=cfg.rel_type,

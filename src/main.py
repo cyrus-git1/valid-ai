@@ -38,6 +38,7 @@ from src.routers.agent_router import router as agent_router
 from src.routers.survey_router import router as survey_router
 from src.routers.retrieval_router import router as retrieval_router
 from src.routers.context_summary_router import router as context_summary_router
+from src.routers.strategic_analysis_router import router as strategic_analysis_router
 
 app = FastAPI(
     title="Knowledge Graph RAG API",
@@ -70,6 +71,7 @@ app.include_router(agent_router)       # POST /agent/query  (intent classificati
 app.include_router(survey_router)      # POST /survey/generate  (direct — no classification)
 app.include_router(retrieval_router)   # POST /retrieve/ask     (direct — no classification)
 app.include_router(context_summary_router)  # POST /context-summary/generate, /get, DELETE
+app.include_router(strategic_analysis_router)  # POST /strategic-analysis/generate
 
 @app.get("/", tags=["root"])
 def root():

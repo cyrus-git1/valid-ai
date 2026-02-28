@@ -22,8 +22,11 @@ spacy
 tiktoken
 python-docx
 python-multipart
+pandas
+openpyxl
 
 # Web Scraping
 scrapy
 trafilatura
 requests
+httpx

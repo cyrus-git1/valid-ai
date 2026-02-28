@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 class KGBuildRequest(BaseModel):
     tenant_id: UUID
-    client_id: UUID
+    client_id: Optional[UUID] = None         # None → all clients for this tenant
     document_id: Optional[UUID] = None       # scope to one doc, or None for all
     similarity_threshold: float = 0.82
     max_edges_per_chunk: int = 10
@@ -29,7 +29,7 @@ class KGBuildResponse(BaseModel):
 
 class PruneRequest(BaseModel):
     tenant_id: UUID
-    client_id: UUID
+    client_id: Optional[UUID] = None
     edge_stale_days: int = 90
     node_stale_days: int = 180
     min_degree: int = 3
