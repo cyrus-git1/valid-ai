@@ -119,22 +119,40 @@ class IngestService:
         title: Optional[str],
         metadata: JsonDict,
     ) -> UUID:
-        payload = {
-            "tenant_id": str(tenant_id),
-            "client_id": str(client_id),
-            "source_type": source_type,
-            "source_uri": source_uri,
-            "title": title,
-            "metadata": metadata or {},
-            "updated_at": "now()",
-        }
+        # Check if document already exists for this tenant+client+source
+        existing = (
+            self.sb.table("documents")
+            .select("id")
+            .eq("tenant_id", str(tenant_id))
+            .eq("client_id", str(client_id))
+            .eq("source_uri", source_uri)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            doc_id = existing.data[0]["id"]
+            self.sb.table("documents").update({
+                "source_type": source_type,
+                "title": title,
+                "metadata": metadata or {},
+            }).eq("id", doc_id).execute()
+            logger.info("Updated existing document %s", doc_id)
+            return UUID(doc_id)
+
         res = (
             self.sb.table("documents")
-            .upsert(payload, on_conflict="tenant_id,client_id,source_uri")
+            .insert({
+                "tenant_id": str(tenant_id),
+                "client_id": str(client_id),
+                "source_type": source_type,
+                "source_uri": source_uri,
+                "title": title,
+                "metadata": metadata or {},
+            })
             .execute()
         )
         if not res.data:
-            raise RuntimeError("documents upsert returned no rows")
+            raise RuntimeError("documents insert returned no rows")
         return UUID(res.data[0]["id"])
 
     # ── Embedding ─────────────────────────────────────────────────────────────
