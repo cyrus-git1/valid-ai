@@ -100,6 +100,9 @@ create table if not exists public.documents (
   updated_at timestamptz not null default now()
 );
 
+create unique index if not exists documents_tenant_source_uq
+  on public.documents(tenant_id, client_id, source_uri);
+
 create index if not exists documents_tenant_idx on public.documents(tenant_id);
 create index if not exists documents_client_idx on public.documents(tenant_id, client_id);
 create index if not exists documents_metadata_gin on public.documents using gin(metadata);

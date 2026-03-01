@@ -31,6 +31,7 @@ from supabase import Client
 
 from src.processing.tokenization import document_bytes_to_chunks, web_scraped_json_to_chunks
 from src.processing.helpers import embed_texts
+from src.services.kg_service import KGService, KGBuildConfig
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +126,15 @@ class IngestService:
             "source_uri": source_uri,
             "title": title,
             "metadata": metadata or {},
+            "updated_at": "now()",
         }
         res = (
             self.sb.table("documents")
-            .insert(payload)
+            .upsert(payload, on_conflict="tenant_id,client_id,source_uri")
             .execute()
         )
         if not res.data:
-            raise RuntimeError("documents insert returned no rows")
+            raise RuntimeError("documents upsert returned no rows")
         return UUID(res.data[0]["id"])
 
     # ── Embedding ─────────────────────────────────────────────────────────────
@@ -395,6 +397,24 @@ class IngestService:
             raise ValueError(
                 "IngestInput requires either (file_bytes + file_name) or web_url."
             )
+
+        # Build / update KG nodes + similarity edges for this tenant
+        if result.chunks_upserted > 0:
+            try:
+                kg_svc = KGService(self.sb)
+                kg_result = kg_svc.build_kg_from_chunk_embeddings(
+                    tenant_id=inp.tenant_id,
+                    client_id=inp.client_id,
+                    config=KGBuildConfig(),
+                )
+                logger.info(
+                    "KG build — nodes=%d edges=%d",
+                    kg_result.get("nodes_upserted", 0),
+                    kg_result.get("edges_upserted", 0),
+                )
+            except Exception as e:
+                result.warnings.append(f"KG build failed: {e}")
+                logger.warning("KG build failed: %s", e)
 
         if inp.prune_after_ingest:
             try:

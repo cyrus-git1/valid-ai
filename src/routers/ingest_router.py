@@ -144,20 +144,22 @@ async def ingest_file(
         "application/vnd.ms-excel",
         "text/vtt",
         "text/plain",  # some clients send .vtt as text/plain
+        "application/octet-stream",  # generic fallback — validated by extension below
     }
-    if file.content_type not in _ALLOWED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{file.content_type}'. Send a PDF, DOCX, VTT, or XLSX.",
-        )
+    _ALLOWED_EXTENSIONS = {"pdf", "docx", "vtt", "xlsx", "xls"}
 
     file_bytes = await file.read()
     file_name = file.filename or f"upload_{uuid.uuid4().hex}.bin"
+    ext = (file_name.rsplit(".", 1)[-1] if "." in file_name else "").lower()
+
+    if file.content_type not in _ALLOWED_CONTENT_TYPES and ext not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{file.content_type}' (ext='{ext}'). Send a PDF, DOCX, VTT, or XLSX.",
+        )
     job_id = str(uuid.uuid4())
     sb = get_supabase()
 
-    # Detect source type from file extension
-    ext = (file_name.rsplit(".", 1)[-1] if "." in file_name else "").lower()
     _EXT_TO_TYPE = {"pdf": "pdf", "docx": "docx", "vtt": "vtt", "xlsx": "xlsx", "xls": "xlsx"}
     source_type = _EXT_TO_TYPE.get(ext, ext or "file")
 
@@ -358,12 +360,15 @@ async def batch_ingest_files(
         "application/vnd.ms-excel",
         "text/vtt",
         "text/plain",
+        "application/octet-stream",
     }
+    _ALLOWED_EXTENSIONS = {"pdf", "docx", "vtt", "xlsx", "xls"}
 
     # Validate and read all files upfront
     files_data: List[Dict[str, Any]] = []
     for f in files:
-        if f.content_type not in _ALLOWED_CONTENT_TYPES:
+        f_ext = (f.filename.rsplit(".", 1)[-1] if f.filename and "." in f.filename else "").lower()
+        if f.content_type not in _ALLOWED_CONTENT_TYPES and f_ext not in _ALLOWED_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
                 detail=f"Unsupported file type '{f.content_type}' for file '{f.filename}'. "

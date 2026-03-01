@@ -78,7 +78,9 @@ def run_spider(url: str, output_file: str = "scraped_data.json") -> None:
         print(f"\n✓ Scraped {len(pages)} pages and saved to {output_path}")
         print(f"  File is ready for tokenization")
     else:
-        print("\n⚠ No items were scraped")
+        print("\n⚠ No items were scraped with Scrapy — trying Playwright fallback")
+        from src.helpers.playwright_scraper import run_playwright_scraper
+        run_playwright_scraper(url, output_file)
 
 
 if __name__ == "__main__":

@@ -30,3 +30,4 @@ scrapy
 trafilatura
 requests
 httpx
+playwright

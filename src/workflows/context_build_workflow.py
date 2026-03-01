@@ -3,7 +3,10 @@ src/workflows/context_build_workflow.py
 -----------------------------------------
 LangGraph StateGraph that orchestrates the full context build pipeline:
 
-  Input JSON → validate → ingest all sources → build KG → return Documents
+  Input JSON → validate → ingest all sources → fetch Documents
+
+KG nodes and edges are built automatically during ingest (inside
+IngestService.ingest()), so no separate KG build step is needed.
 
 The terminal output is state["documents"] — a List[Document] that agents
 can use immediately for retrieval and answer generation.
@@ -33,7 +36,6 @@ from langchain_core.documents import Document
 from langgraph.graph import END, StateGraph
 
 from src.services.ingest_service import IngestInput, IngestOutput, IngestService
-from src.services.kg_service import KGBuildConfig, KGService
 from src.services.kg_retriever_service import KGRetrieverService
 from src.supabase.supabase_client import get_supabase
 
@@ -50,7 +52,6 @@ class ContextBuildState(TypedDict, total=False):
     transcripts: List[str]
     client_profile: Dict[str, Any]
     ingest_results: List[Dict[str, Any]]
-    kg_build_result: Dict[str, Any]
     documents: List[Document]
     status: str
     error: Optional[str]
@@ -193,26 +194,12 @@ def ingest_sources(state: ContextBuildState) -> ContextBuildState:
     }
 
 
-def build_kg(state: ContextBuildState) -> ContextBuildState:
-    """Build the knowledge graph from the ingested chunks."""
-    sb = get_supabase()
-    kg_svc = KGService(sb)
+def fetch_documents(state: ContextBuildState) -> ContextBuildState:
+    """Fetch KG nodes as LangChain Documents (KG was built during ingest)."""
     tenant_id = UUID(state["tenant_id"])
     client_id = UUID(state["client_id"])
     warnings = list(state.get("warnings", []))
 
-    try:
-        kg_result = kg_svc.build_kg_from_chunk_embeddings(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            config=KGBuildConfig(),
-        )
-    except Exception as e:
-        warnings.append(f"KG build failed: {e}")
-        logger.error("KG build failed: %s", e)
-        kg_result = {}
-
-    # Convert to LangChain Documents using the retriever
     documents: List[Document] = []
     try:
         retriever = KGRetrieverService.from_env(
@@ -221,8 +208,6 @@ def build_kg(state: ContextBuildState) -> ContextBuildState:
             top_k=50,
             hop_limit=0,
         )
-        # Fetch all nodes for this client via a broad query
-        # We use the retriever's internal methods for batch fetching
         all_nodes = retriever._vector_search(retriever._embed_query(""))
         for node in all_nodes:
             documents.append(
@@ -234,7 +219,6 @@ def build_kg(state: ContextBuildState) -> ContextBuildState:
 
     return {
         **state,
-        "kg_build_result": kg_result,
         "documents": documents,
         "warnings": warnings,
         "status": "complete",
@@ -258,7 +242,7 @@ def route_after_validate(state: ContextBuildState) -> str:
 def route_after_ingest(state: ContextBuildState) -> str:
     if state.get("status") == "failed":
         return "handle_error"
-    return "build_kg"
+    return "fetch_documents"
 
 
 # ── Graph ────────────────────────────────────────────────────────────────────
@@ -269,14 +253,14 @@ def build_context_graph() -> StateGraph:
 
     graph.add_node("validate_input", validate_input)
     graph.add_node("ingest_sources", ingest_sources)
-    graph.add_node("build_kg", build_kg)
+    graph.add_node("fetch_documents", fetch_documents)
     graph.add_node("handle_error", handle_error)
 
     graph.set_entry_point("validate_input")
 
     graph.add_conditional_edges("validate_input", route_after_validate)
     graph.add_conditional_edges("ingest_sources", route_after_ingest)
-    graph.add_edge("build_kg", END)
+    graph.add_edge("fetch_documents", END)
     graph.add_edge("handle_error", END)
 
     return graph.compile()
