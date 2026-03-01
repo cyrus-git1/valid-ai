@@ -34,9 +34,7 @@ from src.routers.kg_router import router as kg_router
 from src.routers.search_router import router as search_router
 from src.routers.admin_router import router as admin_router
 from src.routers.context_router import router as context_router
-from src.routers.agent_router import router as agent_router
 from src.routers.survey_router import router as survey_router
-from src.routers.retrieval_router import router as retrieval_router
 from src.routers.context_summary_router import router as context_summary_router
 from src.routers.strategic_analysis_router import router as strategic_analysis_router
 
@@ -67,9 +65,7 @@ app.include_router(kg_router)          # POST /kg/build, POST /kg/prune, GET /kg
 app.include_router(search_router)      # POST /search/semantic, /search/graph, /search/ask
 app.include_router(admin_router)       # GET /admin/health, /admin/stats, POST /admin/reindex
 app.include_router(context_router)     # POST /context/build, GET /context/status
-app.include_router(agent_router)       # POST /agent/query  (intent classification → delegate)
 app.include_router(survey_router)      # POST /survey/generate  (direct — no classification)
-app.include_router(retrieval_router)   # POST /retrieve/ask     (direct — no classification)
 app.include_router(context_summary_router)  # POST /context-summary/generate, /get, DELETE
 app.include_router(strategic_analysis_router)  # POST /strategic-analysis/generate
 
