@@ -32,6 +32,7 @@ from supabase import Client
 from src.processing.tokenization import document_bytes_to_chunks, web_scraped_json_to_chunks
 from src.processing.helpers import embed_texts
 from src.services.kg_service import KGService, KGBuildConfig
+from src.services.context_summary_service import ContextSummaryService
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +434,22 @@ class IngestService:
             except Exception as e:
                 result.warnings.append(f"KG build failed: {e}")
                 logger.warning("KG build failed: %s", e)
+
+            # Auto-generate / update context summary
+            try:
+                summary_svc = ContextSummaryService(self.sb)
+                summary_svc.generate_summary(
+                    tenant_id=inp.tenant_id,
+                    client_id=inp.client_id,
+                    force_regenerate=True,
+                )
+                logger.info(
+                    "Context summary upserted for tenant=%s client=%s",
+                    inp.tenant_id, inp.client_id,
+                )
+            except Exception as e:
+                result.warnings.append(f"Context summary generation failed: {e}")
+                logger.warning("Context summary generation failed: %s", e)
 
         if inp.prune_after_ingest:
             try:
