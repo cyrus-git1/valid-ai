@@ -152,9 +152,14 @@ async def ingest_file(
         )
 
     file_bytes = await file.read()
-    file_name = file.filename or f"upload_{uuid.uuid4().hex}.pdf"
+    file_name = file.filename or f"upload_{uuid.uuid4().hex}.bin"
     job_id = str(uuid.uuid4())
     sb = get_supabase()
+
+    # Detect source type from file extension
+    ext = (file_name.rsplit(".", 1)[-1] if "." in file_name else "").lower()
+    _EXT_TO_TYPE = {"pdf": "pdf", "docx": "docx", "vtt": "vtt", "xlsx": "xlsx", "xls": "xlsx"}
+    source_type = _EXT_TO_TYPE.get(ext, ext or "file")
 
     background_tasks.add_task(
         _run_file_ingest,
@@ -165,7 +170,7 @@ async def ingest_file(
     return IngestFileResponse(
         job_id=job_id,
         document_id="pending",
-        source_type="pdf",
+        source_type=source_type,
         source_uri="pending",
         chunks_upserted=0,
         warnings=[],
