@@ -36,7 +36,10 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
 from src.prompts.survey_prompts import (
+    ALL_QUESTION_TYPES,
     CONTEXT_ANALYSIS_PROMPT,
+    FOLLOW_UP_SURVEY_PROMPT,
+    QUESTION_RECOMMENDATION_PROMPT,
     SURVEY_GENERATION_PROMPT,
     get_question_type_instructions,
 )
@@ -201,7 +204,7 @@ def analyze_context(state: SurveyState) -> SurveyState:
 
 def generate_survey(state: SurveyState) -> SurveyState:
     """Generate survey questions via LLM."""
-    question_types = state.get("question_types", ["multiple_choice"])
+    question_types = state.get("question_types", ALL_QUESTION_TYPES)
     question_type_instructions = get_question_type_instructions(question_types)
 
     llm = ChatOpenAI(
@@ -254,16 +257,51 @@ def validate_output(state: SurveyState) -> SurveyState:
     if not isinstance(survey_data, list):
         return {**state, "error": "Survey output is not a JSON array", "status": "parse_error"}
 
-    # Normalize each question to the required schema
+    # Normalize each question to the required schema per type
     normalized = []
     for q in survey_data:
-        normalized.append({
+        qtype = q.get("type", "multiple_choice")
+        base = {
             "id": q.get("id") if _is_valid_uuid(q.get("id")) else str(uuid.uuid4()),
-            "type": q.get("type", "multiple_choice"),
+            "type": qtype,
             "label": q.get("label") or q.get("text", ""),
-            "options": q.get("options", []),
             "required": bool(q.get("required", False)),
-        })
+        }
+
+        if qtype in ("multiple_choice", "checkbox"):
+            base["options"] = q.get("options", [])
+
+        elif qtype == "rating":
+            base["min"] = q.get("min", 1)
+            base["max"] = q.get("max", 5)
+            base["lowLabel"] = q.get("lowLabel", "Poor")
+            base["highLabel"] = q.get("highLabel", "Excellent")
+
+        elif qtype == "ranking":
+            base["items"] = q.get("items", [])
+
+        elif qtype == "card_sort":
+            # Ensure every item and category has a valid UUID id
+            items = q.get("items", [])
+            base["items"] = [
+                {
+                    "id": item.get("id") if _is_valid_uuid(item.get("id")) else str(uuid.uuid4()),
+                    "label": item.get("label", ""),
+                }
+                for item in items
+            ]
+            categories = q.get("categories", [])
+            base["categories"] = [
+                {
+                    "id": cat.get("id") if _is_valid_uuid(cat.get("id")) else str(uuid.uuid4()),
+                    "label": cat.get("label", ""),
+                }
+                for cat in categories
+            ]
+
+        # short_text, long_text, yes_no, nps — no extra fields needed
+
+        normalized.append(base)
 
     return {
         **state,
@@ -311,6 +349,288 @@ def route_on_validation(state: SurveyState) -> str:
     if state.get("status") == "parse_error":
         return "fallback_output"
     return END
+
+
+# ── Standalone generation functions ──────────────────────────────────────────
+
+
+def generate_question(
+    *,
+    request: str,
+    existing_questions: List[Dict[str, Any]],
+    tenant_id: str,
+    client_id: str,
+    client_profile: Dict[str, Any] | None = None,
+    question_types: List[str] | None = None,
+    count: int = 3,
+) -> Dict[str, Any]:
+    """Generate question recommendations based on already-created survey questions.
+
+    Retrieves KG context, analyses it, then asks the LLM to recommend new
+    questions that complement the ones already in the survey.
+
+    Returns dict with keys: recommendations (list), reasoning (str), status, error.
+    """
+    question_types = question_types or ALL_QUESTION_TYPES
+
+    # ── retrieve context ──
+    svc = SearchService(tenant_id=UUID(tenant_id), client_id=UUID(client_id))
+    docs = svc.graph_search(request, top_k=10, hop_limit=1)
+    context = ""
+    if docs:
+        context = "\n\n---\n\n".join(
+            f"[Source {i + 1}]\n{doc.page_content}"
+            for i, doc in enumerate(docs)
+            if doc.page_content.strip()
+        )
+
+    # ── build profile ──
+    profile_section = _build_profile_section(client_profile or {})
+
+    # ── analyse context ──
+    context_analysis = _run_context_analysis(
+        request=request,
+        context=context,
+        client_profile=client_profile or {},
+    )
+
+    # ── format existing questions for prompt ──
+    existing_text = json.dumps(existing_questions, indent=2) if existing_questions else "[]"
+
+    # ── generate recommendations ──
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.4,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+    chain = QUESTION_RECOMMENDATION_PROMPT | llm | StrOutputParser()
+
+    try:
+        raw = chain.invoke({
+            "request": request,
+            "count": str(count),
+            "existing_questions_text": existing_text,
+            "context_analysis": context_analysis,
+            "context_section": f"\n\n{context}" if context else "",
+            "profile_section": profile_section,
+            "question_type_instructions": get_question_type_instructions(question_types),
+        })
+    except Exception as e:
+        logger.exception("Question recommendation failed")
+        return {"recommendations": [], "reasoning": "", "status": "failed", "error": str(e)}
+
+    return _parse_recommendation_output(raw)
+
+
+def generate_follow_up_survey(
+    *,
+    original_request: str,
+    completed_questions: List[Dict[str, Any]],
+    tenant_id: str,
+    client_id: str,
+    client_profile: Dict[str, Any] | None = None,
+    question_types: List[str] | None = None,
+    count: int = 5,
+) -> Dict[str, Any]:
+    """Generate follow-up survey questions from a completed survey.
+
+    Takes the original survey questions (with optional response summaries) and
+    produces a new set of questions that probe deeper into the findings.
+
+    Returns dict with keys: questions (list), reasoning (str), status, error.
+    """
+    question_types = question_types or ALL_QUESTION_TYPES
+
+    # ── retrieve context ──
+    svc = SearchService(tenant_id=UUID(tenant_id), client_id=UUID(client_id))
+    docs = svc.graph_search(original_request, top_k=10, hop_limit=1)
+    context = ""
+    if docs:
+        context = "\n\n---\n\n".join(
+            f"[Source {i + 1}]\n{doc.page_content}"
+            for i, doc in enumerate(docs)
+            if doc.page_content.strip()
+        )
+
+    # ── build profile ──
+    profile_section = _build_profile_section(client_profile or {})
+
+    # ── analyse context ──
+    context_analysis = _run_context_analysis(
+        request=original_request,
+        context=context,
+        client_profile=client_profile or {},
+    )
+
+    # ── format completed survey for prompt ──
+    completed_text = _format_completed_survey(completed_questions)
+
+    # ── generate follow-up ──
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.4,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+    chain = FOLLOW_UP_SURVEY_PROMPT | llm | StrOutputParser()
+
+    try:
+        raw = chain.invoke({
+            "request": original_request,
+            "count": str(count),
+            "completed_survey_text": completed_text,
+            "context_analysis": context_analysis,
+            "context_section": f"\n\n{context}" if context else "",
+            "profile_section": profile_section,
+            "question_type_instructions": get_question_type_instructions(question_types),
+        })
+    except Exception as e:
+        logger.exception("Follow-up survey generation failed")
+        return {"questions": [], "reasoning": "", "status": "failed", "error": str(e)}
+
+    return _parse_recommendation_output(raw, key="questions")
+
+
+# ── Shared helpers for new functions ─────────────────────────────────────────
+
+
+def _build_profile_section(client_profile: Dict[str, Any]) -> str:
+    """Build the profile section string from a client_profile dict."""
+    parts = []
+    if client_profile.get("industry"):
+        parts.append(f"Industry: {client_profile['industry']}")
+    if client_profile.get("headcount"):
+        parts.append(f"Headcount: {client_profile['headcount']} employees")
+    if client_profile.get("revenue"):
+        parts.append(f"Revenue: {client_profile['revenue']}")
+    if client_profile.get("company_name"):
+        parts.append(f"Company: {client_profile['company_name']}")
+    if client_profile.get("persona"):
+        parts.append(f"Target persona: {client_profile['persona']}")
+    demo = client_profile.get("demographic", {})
+    if demo.get("age_range"):
+        parts.append(f"Respondent age range: {demo['age_range']}")
+    if demo.get("income_bracket"):
+        parts.append(f"Income bracket: {demo['income_bracket']}")
+    if demo.get("occupation"):
+        parts.append(f"Respondent occupation: {demo['occupation']}")
+    if demo.get("location"):
+        parts.append(f"Location: {demo['location']}")
+    if demo.get("language") and demo["language"] != "en":
+        parts.append(f"Survey language: {demo['language']}")
+
+    if parts:
+        return f"\n\nOrganization profile:\n" + "\n".join(parts)
+    return ""
+
+
+def _run_context_analysis(
+    request: str,
+    context: str,
+    client_profile: Dict[str, Any],
+) -> str:
+    """Run the LLM context-analysis step shared by both new functions."""
+    parts = []
+    for k, v in client_profile.items():
+        if k != "demographic" and v:
+            parts.append(f"{k}: {v}")
+    tenant_profile = "\n".join(parts) if parts else "No profile provided."
+
+    if not context.strip() and tenant_profile == "No profile provided.":
+        return "No context or profile available. Generate general-purpose survey questions."
+
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.2,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+    chain = CONTEXT_ANALYSIS_PROMPT | llm | StrOutputParser()
+
+    try:
+        return chain.invoke({
+            "tenant_profile": tenant_profile,
+            "request": request,
+            "context": context if context.strip() else "No knowledge base context available.",
+        })
+    except Exception as e:
+        logger.exception("Context analysis failed")
+        return f"Analysis unavailable: {e}. Proceed with general survey design."
+
+
+def _format_completed_survey(questions: List[Dict[str, Any]]) -> str:
+    """Format completed survey questions (with optional response_summary) for the prompt."""
+    lines: List[str] = []
+    for i, q in enumerate(questions, 1):
+        parts = [f"Q{i}. [{q.get('type', 'unknown')}] {q.get('label', '')}"]
+        if q.get("options"):
+            parts.append(f"   Options: {', '.join(q['options'])}")
+        if q.get("response_summary"):
+            parts.append(f"   Response summary: {q['response_summary']}")
+        lines.append("\n".join(parts))
+    return "\n\n".join(lines) if lines else "No questions provided."
+
+
+def _parse_recommendation_output(
+    raw: str,
+    key: str = "recommendations",
+) -> Dict[str, Any]:
+    """Parse LLM output that contains {reasoning, questions/recommendations}."""
+    data = None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+        if match:
+            try:
+                data = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+    if data is None:
+        return {key: [], "reasoning": "", "status": "parse_error", "error": "Could not parse JSON"}
+
+    reasoning = ""
+    questions_raw: list = []
+
+    if isinstance(data, dict):
+        reasoning = data.get("reasoning", "")
+        # Accept either the expected key or common alternatives
+        questions_raw = data.get(key) or data.get("questions") or data.get("recommendations") or []
+    elif isinstance(data, list):
+        questions_raw = data
+
+    # Normalise questions (assign UUIDs, enforce schema)
+    normalized = []
+    for q in questions_raw:
+        qtype = q.get("type", "multiple_choice")
+        base: Dict[str, Any] = {
+            "id": q.get("id") if _is_valid_uuid(q.get("id")) else str(uuid.uuid4()),
+            "type": qtype,
+            "label": q.get("label") or q.get("text", ""),
+            "required": bool(q.get("required", False)),
+        }
+        if qtype in ("multiple_choice", "checkbox"):
+            base["options"] = q.get("options", [])
+        elif qtype == "rating":
+            base["min"] = q.get("min", 1)
+            base["max"] = q.get("max", 5)
+            base["lowLabel"] = q.get("lowLabel", "Poor")
+            base["highLabel"] = q.get("highLabel", "Excellent")
+        elif qtype == "ranking":
+            base["items"] = q.get("items", [])
+        elif qtype == "card_sort":
+            items = q.get("items", [])
+            base["items"] = [
+                {"id": it.get("id") if _is_valid_uuid(it.get("id")) else str(uuid.uuid4()), "label": it.get("label", "")}
+                for it in items
+            ]
+            categories = q.get("categories", [])
+            base["categories"] = [
+                {"id": cat.get("id") if _is_valid_uuid(cat.get("id")) else str(uuid.uuid4()), "label": cat.get("label", "")}
+                for cat in categories
+            ]
+        normalized.append(base)
+
+    return {key: normalized, "reasoning": reasoning, "status": "complete", "error": None}
 
 
 # ── Graph ────────────────────────────────────────────────────────────────────
