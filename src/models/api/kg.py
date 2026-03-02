@@ -6,10 +6,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.models.base import TenantOwned
 
-class KGBuildRequest(BaseModel):
-    tenant_id: UUID
-    client_id: Optional[UUID] = None         # None → all clients for this tenant
+
+class KGBuildRequest(TenantOwned):
     document_id: Optional[UUID] = None       # scope to one doc, or None for all
     similarity_threshold: float = 0.82
     max_edges_per_chunk: int = 10
@@ -27,9 +27,7 @@ class KGBuildResponse(BaseModel):
     max_edges_per_chunk: int
 
 
-class PruneRequest(BaseModel):
-    tenant_id: UUID
-    client_id: Optional[UUID] = None
+class PruneRequest(TenantOwned):
     edge_stale_days: int = 90
     node_stale_days: int = 180
     min_degree: int = 3

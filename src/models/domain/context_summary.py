@@ -7,12 +7,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from src.models.domain._time import utcnow
+from src.models.base import TenantScoped
+from src.models.domain._time import TimestampMixin
 
 JsonDict = Dict[str, Any]
 
 
-class ContextSummaryUpsert(BaseModel):
+class ContextSummaryUpsert(TenantScoped):
     """
     Upsert intent for a context summary.
 
@@ -20,18 +21,13 @@ class ContextSummaryUpsert(BaseModel):
     One active summary per tenant+client pair.
     """
 
-    tenant_id: UUID
-    client_id: UUID
-
     summary: str
     topics: List[str] = Field(default_factory=list)
     metadata: JsonDict = Field(default_factory=dict)
     source_stats: JsonDict = Field(default_factory=dict)
 
 
-class ContextSummaryRow(ContextSummaryUpsert):
+class ContextSummaryRow(ContextSummaryUpsert, TimestampMixin):
     """Full database row returned after insert/select."""
 
     id: UUID
-    created_at: datetime = Field(default_factory=utcnow)
-    updated_at: datetime = Field(default_factory=utcnow)

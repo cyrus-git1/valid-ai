@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.models.base import TenantScoped, TenantScopedRequest
+
 
 # ── Shared / reusable ─────────────────────────────────────────────────────────
 
@@ -38,11 +40,9 @@ class ActionPoint(BaseModel):
     )
 
 
-class StrategicAnalysisResult(BaseModel):
+class StrategicAnalysisResult(TenantScoped):
     """Core analysis output — shared by single, batch, and all responses."""
 
-    tenant_id: UUID
-    client_id: UUID
     focus_query: str
 
     # Core outputs
@@ -75,20 +75,14 @@ class StrategicAnalysisResult(BaseModel):
 # ── Single ────────────────────────────────────────────────────────────────────
 
 
-class StrategicAnalysisRequest(BaseModel):
+class StrategicAnalysisRequest(TenantScopedRequest):
     """Request body for POST /strategic-analysis/generate (single)."""
 
-    tenant_id: UUID
-    client_id: UUID
     focus_query: str = Field(
         description=(
             "The business question or area of focus for the analysis. "
             "e.g. 'How can we improve customer retention?'"
         ),
-    )
-    client_profile: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Optional company labels / client profile overrides.",
     )
     top_k: int = Field(default=10, description="Number of KG nodes to retrieve.")
     hop_limit: int = Field(default=1, description="Graph expansion hops.")
@@ -102,11 +96,9 @@ class StrategicAnalysisRequest(BaseModel):
     llm_model: str = Field(default="gpt-4o-mini", description="LLM to use for analysis.")
 
 
-class StrategicAnalysisResponse(BaseModel):
+class StrategicAnalysisResponse(TenantScoped):
     """Response from the single generate endpoint."""
 
-    tenant_id: UUID
-    client_id: UUID
     focus_query: str
 
     executive_summary: str
@@ -123,7 +115,7 @@ class StrategicAnalysisResponse(BaseModel):
 # ── Batch (multiple focus queries, same tenant+client) ────────────────────────
 
 
-class BatchAnalysisRequest(BaseModel):
+class BatchAnalysisRequest(TenantScopedRequest):
     """Request body for POST /strategic-analysis/generate/batch.
 
     Runs multiple focus queries against the same tenant+client in sequence.
@@ -131,15 +123,9 @@ class BatchAnalysisRequest(BaseModel):
     and reused across all queries to avoid redundant data fetching.
     """
 
-    tenant_id: UUID
-    client_id: UUID
     focus_queries: List[str] = Field(
         min_length=1,
         description="List of business questions to analyse (1-10).",
-    )
-    client_profile: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Optional company labels / client profile overrides.",
     )
     top_k: int = Field(default=10, description="Number of KG nodes to retrieve per query.")
     hop_limit: int = Field(default=1, description="Graph expansion hops.")
@@ -150,11 +136,9 @@ class BatchAnalysisRequest(BaseModel):
     llm_model: str = Field(default="gpt-4o-mini", description="LLM to use for analysis.")
 
 
-class BatchAnalysisResponse(BaseModel):
+class BatchAnalysisResponse(TenantScoped):
     """Response from the batch generate endpoint."""
 
-    tenant_id: UUID
-    client_id: UUID
     total: int = Field(description="Number of focus queries submitted.")
     completed: int = Field(description="Number that succeeded.")
     failed: int = Field(default=0, description="Number that failed.")

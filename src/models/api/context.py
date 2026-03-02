@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.models.base import TenantScoped
+
 
 class Demographic(BaseModel):
     age_range: Optional[str] = None
@@ -46,10 +48,8 @@ class ContextSources(BaseModel):
     transcripts: List[str] = Field(default_factory=list, description="File paths to WebVTT (.vtt) transcripts from Daily.js sessions")
 
 
-class ContextBuildRequest(BaseModel):
+class ContextBuildRequest(TenantScoped):
     """Unified input payload for building a client's knowledge base."""
-    tenant_id: UUID
-    client_id: UUID
 
     context: ContextSources = Field(default_factory=ContextSources)
     client_profile: ClientProfile = Field(default_factory=ClientProfile)

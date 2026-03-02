@@ -6,17 +6,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.models.base import TenantScoped
 
-class SemanticSearchRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+
+class SemanticSearchRequest(TenantScoped):
     query: str
     top_k: int = Field(default=5, ge=1, le=50)
 
 
-class GraphSearchRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class GraphSearchRequest(TenantScoped):
     query: str
     top_k: int = Field(default=5, ge=1, le=50)
     hop_limit: int = Field(default=1, ge=0, le=2)
@@ -24,9 +22,7 @@ class GraphSearchRequest(BaseModel):
     min_edge_weight: float = Field(default=0.75, ge=0.0, le=1.0)
 
 
-class AskRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class AskRequest(TenantScoped):
     question: str
     top_k: int = Field(default=5, ge=1, le=20)
     hop_limit: int = Field(default=1, ge=0, le=2)

@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, HttpUrl
 
+from src.models.base import TenantScoped
+
 
 class IngestFileResponse(BaseModel):
     job_id: str
@@ -18,9 +20,7 @@ class IngestFileResponse(BaseModel):
     prune_result: Optional[Dict[str, Any]] = None
 
 
-class IngestWebRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class IngestWebRequest(TenantScoped):
     url: str
     title: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -51,9 +51,7 @@ class BatchWebItem(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class BatchWebRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class BatchWebRequest(TenantScoped):
     items: List[BatchWebItem] = Field(..., min_length=1, max_length=50)
     prune_after_ingest: bool = False
 

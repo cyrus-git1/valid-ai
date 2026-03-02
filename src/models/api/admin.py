@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from src.models.base import TenantScoped
+
 
 class HealthResponse(BaseModel):
     status: str             # "ok" | "degraded"
@@ -24,9 +26,7 @@ class StatsResponse(BaseModel):
     kg_edge_count: int
 
 
-class ReindexRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class ReindexRequest(TenantScoped):
     embed_model: str = "text-embedding-3-small"
     embed_batch_size: int = 64
 
@@ -37,9 +37,7 @@ class ReindexResponse(BaseModel):
     warnings: list
 
 
-class RebuildKGRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class RebuildKGRequest(TenantScoped):
     similarity_threshold: float = 0.82
     max_edges_per_chunk: int = 10
     batch_size: int = 500

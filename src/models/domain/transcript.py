@@ -6,36 +6,29 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from ._time import utcnow
+from src.models.base import TenantOwned
+from src.models.domain._time import TimestampMixin
 
 JsonDict = Dict[str, Any]
 
 
 # ── Video transcript (Daily.js WebVTT) ──────────────────────────────────────
 
-class VideoTranscriptCreate(BaseModel):
+class VideoTranscriptCreate(TenantOwned):
     """Intent to store a Daily.js video session transcript (WebVTT source)."""
-    tenant_id: UUID
-    client_id: Optional[UUID] = None
-
     source_uri: Optional[str] = None
     title: Optional[str] = None
     metadata: JsonDict = Field(default_factory=dict)
 
 
-class VideoTranscriptRow(VideoTranscriptCreate):
+class VideoTranscriptRow(VideoTranscriptCreate, TimestampMixin):
     id: UUID
-    created_at: datetime
-    updated_at: datetime
 
 
 # ── Chat transcript (Daily.js text chat) ─────────────────────────────────────
 
-class ChatTranscriptCreate(BaseModel):
+class ChatTranscriptCreate(TenantOwned):
     """Intent to store a Daily.js text-chat transcript."""
-    tenant_id: UUID
-    client_id: Optional[UUID] = None
-
     source_uri: Optional[str] = None
     metadata: JsonDict = Field(default_factory=dict)
 

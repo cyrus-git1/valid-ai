@@ -13,6 +13,12 @@ class TenantScoped(BaseModel):
     client_id: UUID
 
 
+class TenantOwned(BaseModel):
+    """Base for models owned by a tenant with an optional client scope."""
+    tenant_id: UUID
+    client_id: Optional[UUID] = None
+
+
 class TenantScopedRequest(TenantScoped):
     """Base for request models that accept an optional client profile."""
     client_profile: Optional[Dict[str, Any]] = Field(

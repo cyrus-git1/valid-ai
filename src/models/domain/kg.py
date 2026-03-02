@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.models.base import TenantScoped
+
 JsonDict = Dict[str, Any]
 
 
@@ -28,11 +30,8 @@ class ArtifactType(str, Enum):
     CHUNK = "Chunk"
 
 
-class KnowledgeGraphNodeUpsert(BaseModel):
+class KnowledgeGraphNodeUpsert(TenantScoped):
     # Upsert by (tenant_id, client_id, node_key)
-    tenant_id: UUID
-    client_id: UUID
-
     node_key: str
     type: ArtifactType
     name: str
@@ -44,11 +43,8 @@ class KnowledgeGraphNodeUpsert(BaseModel):
     status: NodeStatus = NodeStatus.ACTIVE
 
 
-class KnowledgeGraphEdgeUpsert(BaseModel):
+class KnowledgeGraphEdgeUpsert(TenantScoped):
     # Upsert by (tenant_id, client_id, src_id, dst_id, rel_type)
-    tenant_id: UUID
-    client_id: UUID
-
     src_id: UUID
     dst_id: UUID
 
@@ -57,27 +53,21 @@ class KnowledgeGraphEdgeUpsert(BaseModel):
     properties: JsonDict = Field(default_factory=dict)
 
 
-class KGNodeEvidenceUpsert(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class KGNodeEvidenceUpsert(TenantScoped):
     node_id: UUID
     chunk_id: UUID
     quote: Optional[str] = None
     score: Optional[float] = None
 
 
-class KGEdgeEvidenceUpsert(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class KGEdgeEvidenceUpsert(TenantScoped):
     edge_id: UUID
     chunk_id: UUID
     quote: Optional[str] = None
     score: Optional[float] = None
 
 
-class PruneRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
+class PruneRequest(TenantScoped):
     edge_stale_days: int = 90
     node_stale_days: int = 180
     min_degree: int = 3
