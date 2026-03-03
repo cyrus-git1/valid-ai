@@ -35,6 +35,7 @@ from src.routers.admin_router import router as admin_router
 from src.routers.context_router import router as context_router
 from src.routers.survey_router import router as survey_router
 from src.routers.strategic_analysis_router import router as strategic_analysis_router
+from src.routers.sentiment_router import router as sentiment_router
 
 app = FastAPI(
     title="Knowledge Graph RAG API",
@@ -64,6 +65,7 @@ app.include_router(admin_router)       # GET /admin/health, /admin/stats, POST /
 app.include_router(context_router)     # POST /context/build, GET /context/status, /context/summary/*
 app.include_router(survey_router)      # POST /survey/generate  (direct — no classification)
 app.include_router(strategic_analysis_router)  # POST /strategic-analysis/generate
+app.include_router(sentiment_router)           # POST /sentiment-analysis/generate
 
 @app.get("/", tags=["root"])
 def root():
