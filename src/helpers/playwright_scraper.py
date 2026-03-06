@@ -139,7 +139,14 @@ async def _scrape_with_playwright(start_url):
 
 def run_playwright_scraper(url, output_file="scraped_data.json"):
     """Sync entry point — runs the async Playwright scraper and writes JSON."""
-    print(f"\n⚙ Falling back to Playwright scraper for {url}")
+    print(f"\nFalling back to Playwright scraper for {url}")
+
+    # On Windows, Twisted (used by Scrapy) may leave a SelectorEventLoop policy
+    # that doesn't support subprocess creation.  Force ProactorEventLoop so
+    # Playwright can launch its browser process.
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
     results = asyncio.run(_scrape_with_playwright(url))
 
     pages = []
@@ -172,7 +179,7 @@ def run_playwright_scraper(url, output_file="scraped_data.json"):
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
 
-    print(f"✓ Playwright scraped {len(pages)} pages and saved to {output_path}")
+    print(f"Playwright scraped {len(pages)} pages and saved to {output_path}")
 
 
 if __name__ == "__main__":

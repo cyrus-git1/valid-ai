@@ -87,6 +87,7 @@ def _run_web_ingest(
     tenant_id: uuid.UUID,
     client_id: uuid.UUID,
     title: str | None,
+    metadata: Dict[str, Any],
     prune_after_ingest: bool,
 ) -> None:
     """Background task: full web scrape + ingest pipeline."""
@@ -98,6 +99,7 @@ def _run_web_ingest(
             client_id=client_id,
             web_url=url,
             title=title,
+            metadata=metadata,
             prune_after_ingest=prune_after_ingest,
         ))
         _jobs[job_id] = {
@@ -210,7 +212,7 @@ def ingest_web(
         _run_web_ingest,
         job_id, sb, req.url,
         req.tenant_id, req.client_id,
-        req.title, req.prune_after_ingest,
+        req.title, req.metadata, req.prune_after_ingest,
     )
 
     return IngestWebResponse(

@@ -48,7 +48,10 @@
       "Bash(xargs grep -l -i \"survey\")",
       "Bash(ls /c/Users/cyrus/Valid/src/models/api/*.py)",
       "mcp__Claude_Preview__preview_start",
-      "Bash(kill %1)"
+      "Bash(kill %1)",
+      "Bash(xargs grep -l \"def.*web\\\\|def.*url\\\\|web_url\")",
+      "Bash(python src/processing/run_scraper.py \"https://valid.site\" test_scrape_output.json)",
+      "Bash(python -m playwright install chromium)"
     ]
   }
 }
