@@ -28,7 +28,25 @@
       "Bash(pip install:*)",
       "Bash(timeout:*)",
       "Bash(python -m json.tool:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push)",
+      "Bash(railway --version)",
+      "Bash(npm install -g @railway/cli)",
+      "Bash(railway status)",
+      "Bash(railway login --browserless)",
+      "Bash(RAILWAY_TOKEN=b1eaf8bc-88c9-4053-a751-ec6f28a88a83 railway status)",
+      "Bash(railway login --token b1eaf8bc-88c9-4053-a751-ec6f28a88a83)",
+      "Bash(railway login --help)",
+      "Bash(railway login -b)",
+      "Bash(git check-ignore .env)",
+      "Bash(git push valid-ai main)",
+      "Bash(cygpath -w /tmp/harmix.xlsx)",
+      "Bash(python3 -c \"import uuid; print\\(uuid.uuid4\\(\\)\\)\")",
+      "Bash(ls -la /c/Users/cyrus/Valid/src/routers/*.py)",
+      "Bash(del \"C:\\\\Users\\\\cyrus\\\\Valid\\\\src\\\\routers\\\\context_summary_router.py\")",
+      "Bash(xargs grep -l -i \"survey\")",
+      "Bash(ls /c/Users/cyrus/Valid/src/models/api/*.py)"
     ]
   }
 }

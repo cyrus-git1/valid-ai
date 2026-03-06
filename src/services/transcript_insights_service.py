@@ -69,7 +69,89 @@ class TranscriptInsightsService:
             logger.warning("Failed to fetch transcript chunks: %s", e)
             return [], 0
 
-    # ── Core generation ───────────────────────────────────────────────────
+    # ── Public: from raw VTT content ─────────────────────────────────────
+
+    def generate_from_vtt(
+        self,
+        *,
+        tenant_id: UUID,
+        survey_id: UUID,
+        vtt_content: str,
+        llm_model: str = "gpt-4o-mini",
+    ) -> Dict[str, Any]:
+        """Summarise raw WebVTT content and extract actionable insights (no DB fetch)."""
+        logger.info(
+            "Transcript insights (vtt): tenant=%s survey=%s", tenant_id, survey_id,
+        )
+
+        transcript_context = vtt_content.strip()
+        if not transcript_context:
+            return {
+                "tenant_id": str(tenant_id),
+                "survey_id": str(survey_id),
+                "summary": "No transcript content provided.",
+                "actionable_insights": [],
+                "transcript_count": 0,
+                "chunks_analysed": 0,
+                "status": "complete",
+                "error": None,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        llm = ChatOpenAI(model=llm_model, temperature=0.15)
+        chain = TRANSCRIPT_INSIGHTS_PROMPT | llm | StrOutputParser()
+
+        try:
+            raw_output = chain.invoke({
+                "transcript_count": "1",
+                "chunk_count": "1",
+                "transcript_context": transcript_context,
+            })
+        except Exception as e:
+            logger.exception("Transcript insights LLM call failed")
+            return {
+                "tenant_id": str(tenant_id),
+                "survey_id": str(survey_id),
+                "summary": "",
+                "actionable_insights": [],
+                "transcript_count": 1,
+                "chunks_analysed": 1,
+                "status": "failed",
+                "error": str(e),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        parsed = None
+        try:
+            parsed = json.loads(raw_output)
+        except json.JSONDecodeError:
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_output)
+            if match:
+                try:
+                    parsed = json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+        if parsed is None:
+            logger.warning("LLM returned non-JSON — using raw text as summary")
+            parsed = {
+                "summary": raw_output,
+                "actionable_insights": [],
+            }
+
+        return {
+            "tenant_id": str(tenant_id),
+            "survey_id": str(survey_id),
+            "summary": parsed.get("summary", ""),
+            "actionable_insights": parsed.get("actionable_insights", []),
+            "transcript_count": 1,
+            "chunks_analysed": 1,
+            "status": "complete",
+            "error": None,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # ── Core generation (legacy, DB-backed) ───────────────────────────────
 
     def generate(
         self,

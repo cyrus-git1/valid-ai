@@ -30,13 +30,13 @@ logger = logging.getLogger(__name__)
 
 from src.routers.ingest_router import router as ingest_router
 from src.routers.documents_router import router as documents_router
-from src.routers.search_router import router as search_router
 from src.routers.admin_router import router as admin_router
 from src.routers.context_router import router as context_router
 from src.routers.survey_router import router as survey_router
 from src.routers.strategic_analysis_router import router as strategic_analysis_router
 from src.routers.sentiment_router import router as sentiment_router
 from src.routers.transcript_insights_router import router as transcript_insights_router
+from src.routers.confidence_interval_router import router as confidence_interval_router
 
 app = FastAPI(
     title="Knowledge Graph RAG API",
@@ -61,13 +61,13 @@ app.add_middleware(
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(ingest_router)      # POST /ingest/file, POST /ingest/web
 app.include_router(documents_router)   # GET/PATCH/DELETE /documents
-app.include_router(search_router)      # POST /search/semantic, /search/graph, /search/ask
 app.include_router(admin_router)       # GET /admin/health, /admin/stats, POST /admin/reindex
 app.include_router(context_router)     # POST /context/build, GET /context/status, /context/summary/*
 app.include_router(survey_router)      # POST /survey/generate  (direct — no classification)
 app.include_router(strategic_analysis_router)  # POST /strategic-analysis/generate
 app.include_router(sentiment_router)           # POST /sentiment-analysis/generate
 app.include_router(transcript_insights_router) # POST /transcript-insights/generate
+app.include_router(confidence_interval_router)  # POST /confidence-interval/compute
 
 @app.get("/", tags=["root"])
 def root():

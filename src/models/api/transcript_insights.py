@@ -36,11 +36,8 @@ class ActionableInsight(BaseModel):
 class TranscriptInsightsRequest(BaseModel):
     tenant_id: UUID
     survey_id: UUID
+    vtt_content: str = Field(description="Raw WebVTT transcript content to analyse.")
     llm_model: str = Field(default="gpt-4o-mini", description="LLM to use.")
-    chunk_limit: int = Field(
-        default=60, ge=1, le=200,
-        description="Max transcript chunks to analyse.",
-    )
 
 
 class TranscriptInsightsResponse(BaseModel):

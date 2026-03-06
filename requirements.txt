@@ -9,6 +9,7 @@ pydantic
 # Database
 supabase
 numpy
+scipy
 
 # LLM & Embeddings
 openai

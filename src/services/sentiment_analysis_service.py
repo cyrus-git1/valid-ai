@@ -263,7 +263,73 @@ class SentimentAnalysisService:
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    # ── Public: single ────────────────────────────────────────────────────
+    # ── Public: single (from VTT content) ───────────────────────────────
+
+    def generate_from_vtt(
+        self,
+        *,
+        tenant_id: UUID,
+        survey_id: UUID,
+        vtt_content: str,
+        llm_model: str = "gpt-4o-mini",
+    ) -> Dict[str, Any]:
+        """Run sentiment analysis on raw WebVTT content (no DB fetch)."""
+        logger.info(
+            "Sentiment analysis (vtt): tenant=%s survey=%s",
+            tenant_id, survey_id,
+        )
+
+        transcript_context = vtt_content.strip() or (
+            "(No transcript content provided.)"
+        )
+
+        llm = ChatOpenAI(model=llm_model, temperature=0.1)
+        chain = SENTIMENT_ANALYSIS_PROMPT | llm | StrOutputParser()
+
+        raw_output = chain.invoke({
+            "focus_instructions": "",
+            "profile_section": "",
+            "transcript_count": "1",
+            "chunk_count": "1",
+            "transcript_context": transcript_context,
+            "context_summary": "(Not applicable — raw VTT provided.)",
+        })
+
+        parsed = None
+        try:
+            parsed = json.loads(raw_output)
+        except json.JSONDecodeError:
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_output)
+            if match:
+                try:
+                    parsed = json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+        if parsed is None:
+            logger.warning("LLM returned non-JSON — wrapping as summary")
+            parsed = {
+                "overall_sentiment": {"positive": 0.33, "negative": 0.33, "neutral": 0.34},
+                "dominant_sentiment": "neutral",
+                "themes": [],
+                "notable_quotes": [],
+                "summary": raw_output,
+            }
+
+        return {
+            "tenant_id": str(tenant_id),
+            "survey_id": str(survey_id),
+            "overall_sentiment": parsed.get("overall_sentiment", {}),
+            "dominant_sentiment": parsed.get("dominant_sentiment", "neutral"),
+            "themes": parsed.get("themes", []),
+            "notable_quotes": parsed.get("notable_quotes", []),
+            "summary": parsed.get("summary", ""),
+            "transcript_count": 1,
+            "chunks_analysed": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # ── Public: single (legacy, DB-backed) ────────────────────────────────
 
     def generate_analysis(
         self,

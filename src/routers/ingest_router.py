@@ -139,6 +139,7 @@ async def ingest_file(
     """
     _ALLOWED_CONTENT_TYPES = {
         "application/pdf",
+        "application/x-pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.ms-excel",
@@ -151,6 +152,11 @@ async def ingest_file(
     file_bytes = await file.read()
     file_name = file.filename or f"upload_{uuid.uuid4().hex}.bin"
     ext = (file_name.rsplit(".", 1)[-1] if "." in file_name else "").lower()
+
+    logger.info(
+        "Ingest file received: filename=%s content_type=%s ext=%s size=%d",
+        file_name, file.content_type, ext, len(file_bytes),
+    )
 
     if file.content_type not in _ALLOWED_CONTENT_TYPES and ext not in _ALLOWED_EXTENSIONS:
         raise HTTPException(

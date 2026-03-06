@@ -64,22 +64,19 @@ def _dict_to_result(raw: dict) -> SentimentAnalysisResult:
 def generate_sentiment_analysis(
     req: SentimentAnalysisRequest,
 ) -> SentimentAnalysisResponse:
-    """Generate sentiment analysis for transcript content of a single tenant+client.
+    """Generate sentiment analysis from raw WebVTT content.
 
-    Analyses VTT transcript chunks and produces overall sentiment scores,
+    Accepts a WebVTT transcript string and produces overall sentiment scores,
     themed breakdowns, notable quotes, and a summary paragraph.
-    Optionally narrow to a focus area.
     """
-    svc = SentimentAnalysisService(get_supabase())
+    svc = SentimentAnalysisService(supabase=None)
 
     try:
-        result = svc.generate_analysis(
+        result = svc.generate_from_vtt(
             tenant_id=req.tenant_id,
-            client_id=req.client_id,
-            focus_query=req.focus_query,
-            client_profile=req.client_profile,
+            survey_id=req.survey_id,
+            vtt_content=req.vtt_content,
             llm_model=req.llm_model,
-            chunk_limit=req.chunk_limit,
         )
     except Exception as e:
         logger.exception("Sentiment analysis generation failed")
@@ -87,7 +84,7 @@ def generate_sentiment_analysis(
 
     return SentimentAnalysisResponse(
         tenant_id=result["tenant_id"],
-        client_id=result["client_id"],
+        survey_id=result["survey_id"],
         overall_sentiment=SentimentScore(**result.get("overall_sentiment", {})),
         dominant_sentiment=result.get("dominant_sentiment", "neutral"),
         themes=[

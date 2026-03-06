@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -86,8 +87,24 @@ class IngestService:
 
     # ── Storage ───────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _sanitize_storage_key(name: str) -> str:
+        """Sanitize a filename into a valid Supabase Storage key.
+
+        Removes brackets, parentheses, commas, and other special chars
+        that Supabase rejects.  Spaces are replaced with underscores.
+        """
+        stem, dot, ext = name.rpartition(".")
+        if not dot:
+            stem, ext = name, ""
+        # Replace spaces and special chars with underscores
+        stem = re.sub(r"[\s\[\]\(\),!@#$%^&+={}|;:'\"<>?]+", "_", stem)
+        # Collapse multiple underscores
+        stem = re.sub(r"_+", "_", stem).strip("_")
+        return f"{stem}.{ext}" if ext else stem
+
     def upload_to_bucket(self, file_bytes: bytes, file_name: str, bucket: str = PDF_BUCKET) -> str:
-        path = file_name.lstrip("/")
+        path = self._sanitize_storage_key(file_name.lstrip("/"))
         self.sb.storage.from_(bucket).upload(path, file_bytes, file_options={"upsert": "true"})
         logger.info("Uploaded %d bytes → bucket '%s' path '%s'", len(file_bytes), bucket, path)
         return path
