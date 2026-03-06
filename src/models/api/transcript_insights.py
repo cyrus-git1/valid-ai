@@ -30,14 +30,7 @@ class ActionableInsight(BaseModel):
     )
 
 
-# ── Request / Response ───────────────────────────────────────────────────────
-
-
-class TranscriptInsightsRequest(BaseModel):
-    tenant_id: UUID
-    survey_id: UUID
-    vtt_content: str = Field(description="Raw WebVTT transcript content to analyse.")
-    llm_model: str = Field(default="gpt-4o-mini", description="LLM to use.")
+# ── Response ─────────────────────────────────────────────────────────────────
 
 
 class TranscriptInsightsResponse(BaseModel):

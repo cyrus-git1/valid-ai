@@ -62,14 +62,6 @@ class SentimentAnalysisResult(TenantScoped):
 # ── Single ────────────────────────────────────────────────────────────────────
 
 
-class SentimentAnalysisRequest(BaseModel):
-    """Request body for POST /sentiment-analysis/generate (single)."""
-    tenant_id: UUID
-    survey_id: UUID
-    vtt_content: str = Field(description="Raw WebVTT transcript content to analyse.")
-    llm_model: str = Field(default="gpt-4o-mini", description="LLM to use.")
-
-
 class SentimentAnalysisResponse(BaseModel):
     """Response from the single generate endpoint."""
     tenant_id: UUID

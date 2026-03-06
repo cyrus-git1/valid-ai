@@ -46,7 +46,9 @@
       "Bash(ls -la /c/Users/cyrus/Valid/src/routers/*.py)",
       "Bash(del \"C:\\\\Users\\\\cyrus\\\\Valid\\\\src\\\\routers\\\\context_summary_router.py\")",
       "Bash(xargs grep -l -i \"survey\")",
-      "Bash(ls /c/Users/cyrus/Valid/src/models/api/*.py)"
+      "Bash(ls /c/Users/cyrus/Valid/src/models/api/*.py)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(kill %1)"
     ]
   }
 }

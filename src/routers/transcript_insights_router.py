@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from uuid import UUID
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from src.models.api.transcript_insights import (
     ActionableInsight,
-    TranscriptInsightsRequest,
     TranscriptInsightsResponse,
 )
 from src.services.transcript_insights_service import TranscriptInsightsService
@@ -24,22 +25,27 @@ router = APIRouter(prefix="/transcript-insights", tags=["transcript-insights"])
 
 
 @router.post("/generate", response_model=TranscriptInsightsResponse)
-def generate_transcript_insights(
-    req: TranscriptInsightsRequest,
+async def generate_transcript_insights(
+    file: UploadFile = File(..., description="WebVTT (.vtt) transcript file"),
+    tenant_id: UUID = Form(...),
+    survey_id: UUID = Form(...),
+    llm_model: str = Form("gpt-4o-mini"),
 ) -> TranscriptInsightsResponse:
-    """Summarise raw WebVTT content and extract actionable insights.
+    """Summarise an uploaded WebVTT file and extract actionable insights.
 
-    Accepts a WebVTT transcript string and returns a structured summary with
+    Accepts a .vtt file upload and returns a structured summary with
     actionable insights that could improve the client's product or service.
     """
+    vtt_content = (await file.read()).decode("utf-8")
+
     svc = TranscriptInsightsService(supabase=None)
 
     try:
         result = svc.generate_from_vtt(
-            tenant_id=req.tenant_id,
-            survey_id=req.survey_id,
-            vtt_content=req.vtt_content,
-            llm_model=req.llm_model,
+            tenant_id=tenant_id,
+            survey_id=survey_id,
+            vtt_content=vtt_content,
+            llm_model=llm_model,
         )
     except Exception as e:
         logger.exception("Transcript insights generation failed")

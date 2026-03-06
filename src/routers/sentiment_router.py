@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from uuid import UUID
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from src.models.api.sentiment import (
     AllSentimentRequest,
@@ -19,7 +21,6 @@ from src.models.api.sentiment import (
     BatchSentimentRequest,
     BatchSentimentResponse,
     NotableQuote,
-    SentimentAnalysisRequest,
     SentimentAnalysisResponse,
     SentimentAnalysisResult,
     SentimentScore,
@@ -61,22 +62,27 @@ def _dict_to_result(raw: dict) -> SentimentAnalysisResult:
 
 
 @router.post("/generate", response_model=SentimentAnalysisResponse)
-def generate_sentiment_analysis(
-    req: SentimentAnalysisRequest,
+async def generate_sentiment_analysis(
+    file: UploadFile = File(..., description="WebVTT (.vtt) transcript file"),
+    tenant_id: UUID = Form(...),
+    survey_id: UUID = Form(...),
+    llm_model: str = Form("gpt-4o-mini"),
 ) -> SentimentAnalysisResponse:
-    """Generate sentiment analysis from raw WebVTT content.
+    """Generate sentiment analysis from an uploaded WebVTT file.
 
-    Accepts a WebVTT transcript string and produces overall sentiment scores,
+    Accepts a .vtt file upload and produces overall sentiment scores,
     themed breakdowns, notable quotes, and a summary paragraph.
     """
+    vtt_content = (await file.read()).decode("utf-8")
+
     svc = SentimentAnalysisService(supabase=None)
 
     try:
         result = svc.generate_from_vtt(
-            tenant_id=req.tenant_id,
-            survey_id=req.survey_id,
-            vtt_content=req.vtt_content,
-            llm_model=req.llm_model,
+            tenant_id=tenant_id,
+            survey_id=survey_id,
+            vtt_content=vtt_content,
+            llm_model=llm_model,
         )
     except Exception as e:
         logger.exception("Sentiment analysis generation failed")
