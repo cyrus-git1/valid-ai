@@ -42,6 +42,10 @@ def _docs_to_result_items(docs) -> List[SearchResultItem]:
             document_id=m.get("document_id"),
             chunk_index=m.get("chunk_index"),
             source=m.get("source", "vector"),
+            retrieval_reason=m.get("retrieval_reason"),
+            evidence_quote=m.get("evidence_quote"),
+            evidence_score=m.get("evidence_score"),
+            evidence_count=m.get("evidence_count", 0),
         ))
     return items
 

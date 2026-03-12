@@ -38,6 +38,10 @@ class SearchResultItem(BaseModel):
     document_id: Optional[str]
     chunk_index: Optional[int]
     source: str = "vector"          # "vector" | "graph_expansion"
+    retrieval_reason: Optional[str] = None
+    evidence_quote: Optional[str] = None
+    evidence_score: Optional[float] = None
+    evidence_count: int = 0
 
 
 class SemanticSearchResponse(BaseModel):

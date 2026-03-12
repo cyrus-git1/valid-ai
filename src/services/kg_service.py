@@ -135,6 +135,54 @@ class KGService:
         ).execute()
         return UUID(str(res.data))
 
+    # ── Evidence upserts ────────────────────────────────────────────────────
+
+    def upsert_node_evidence(
+        self,
+        *,
+        tenant_id: UUID,
+        client_id: Optional[UUID],
+        node_id: UUID,
+        chunk_id: UUID,
+        quote: Optional[str] = None,
+        score: Optional[float] = None,
+    ) -> None:
+        """Insert or update a node evidence row linking a node to its source chunk."""
+        self.sb.table("kg_node_evidence").upsert(
+            {
+                "tenant_id": str(tenant_id),
+                "client_id": str(client_id) if client_id else None,
+                "node_id": str(node_id),
+                "chunk_id": str(chunk_id),
+                "quote": quote,
+                "score": score,
+            },
+            on_conflict="tenant_id,client_id,node_id,chunk_id",
+        ).execute()
+
+    def upsert_edge_evidence(
+        self,
+        *,
+        tenant_id: UUID,
+        client_id: Optional[UUID],
+        edge_id: UUID,
+        chunk_id: UUID,
+        quote: Optional[str] = None,
+        score: Optional[float] = None,
+    ) -> None:
+        """Insert or update an edge evidence row linking an edge to a supporting chunk."""
+        self.sb.table("kg_edge_evidence").upsert(
+            {
+                "tenant_id": str(tenant_id),
+                "client_id": str(client_id) if client_id else None,
+                "edge_id": str(edge_id),
+                "chunk_id": str(chunk_id),
+                "quote": quote,
+                "score": score,
+            },
+            on_conflict="tenant_id,client_id,edge_id,chunk_id",
+        ).execute()
+
     # ── Pruning ───────────────────────────────────────────────────────────────
 
     def prune(
@@ -357,6 +405,20 @@ class KGService:
             chunk_id_to_node_id[chunk_id] = node_id
             nodes_upserted += 1
 
+            # Node evidence: link node → source chunk with quote
+            try:
+                quote = (c.get("content") or "")[:200].strip()
+                self.upsert_node_evidence(
+                    tenant_id=tenant_id,
+                    client_id=resolved_cid,
+                    node_id=node_id,
+                    chunk_id=UUID(chunk_id),
+                    quote=quote or None,
+                    score=1.0,  # direct source chunk
+                )
+            except Exception as e:
+                logger.warning("Node evidence upsert failed for chunk %s: %s", chunk_id, e)
+
         # 2) Similarity edges
         sim = _cosine_sim_matrix(vectors)
         edges_upserted = 0
@@ -379,7 +441,7 @@ class KGService:
                 dst_chunk_id = valid_chunks[j]["id"]
                 dst_node_id = chunk_id_to_node_id[dst_chunk_id]
                 # Use the source chunk's client_id for the edge
-                self.upsert_edge(
+                edge_id = self.upsert_edge(
                     tenant_id=tenant_id,
                     client_id=src_client_id,
                     src_id=src_node_id,
@@ -393,6 +455,25 @@ class KGService:
                     },
                 )
                 edges_upserted += 1
+
+                # Edge evidence: link edge → both source and destination chunks
+                cos_score = float(sims_i[j])
+                for ev_chunk_id in (src_chunk_id, dst_chunk_id):
+                    try:
+                        ev_content = next(
+                            (vc.get("content", "") for vc in valid_chunks if vc["id"] == ev_chunk_id),
+                            "",
+                        )
+                        self.upsert_edge_evidence(
+                            tenant_id=tenant_id,
+                            client_id=src_client_id,
+                            edge_id=edge_id,
+                            chunk_id=UUID(ev_chunk_id),
+                            quote=(ev_content[:200].strip()) or None,
+                            score=cos_score,
+                        )
+                    except Exception as e:
+                        logger.warning("Edge evidence upsert failed for edge %s chunk %s: %s", edge_id, ev_chunk_id, e)
 
         return {
             "chunks_fetched": len(all_chunks),

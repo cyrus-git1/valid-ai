@@ -191,6 +191,25 @@ class KGRetrieverService(BaseRetriever):
             logger.warning("Chunk content fetch failed for %s: %s", chunk_id, e)
         return None
 
+    # ── Evidence fetching ────────────────────────────────────────────────────
+
+    def _get_node_evidence(self, node_id: str) -> List[JsonDict]:
+        """Fetch evidence rows for a node from kg_node_evidence."""
+        try:
+            res = (
+                self._sb.table("kg_node_evidence")
+                .select("chunk_id, quote, score")
+                .eq("tenant_id", str(self.tenant_id))
+                .eq("node_id", node_id)
+                .order("score", desc=True)
+                .limit(5)
+                .execute()
+            )
+            return res.data or []
+        except Exception as e:
+            logger.warning("Node evidence fetch failed for %s: %s", node_id, e)
+            return []
+
     # ── Node → Document ───────────────────────────────────────────────────────
 
     def _node_to_document(
@@ -198,6 +217,7 @@ class KGRetrieverService(BaseRetriever):
         node: JsonDict,
         similarity: Optional[float] = None,
         source: str = "vector",
+        retrieval_reason: str = "",
     ) -> Document:
         props = node.get("properties") or {}
         chunk_id = props.get("chunk_id")
@@ -207,14 +227,24 @@ class KGRetrieverService(BaseRetriever):
             or node.get("name") \
             or ""
 
+        # Fetch evidence for richer context
+        node_id = node.get("id", "")
+        evidence_rows = self._get_node_evidence(node_id)
+        evidence_quote = evidence_rows[0]["quote"] if evidence_rows else None
+        evidence_score = evidence_rows[0]["score"] if evidence_rows else None
+
         metadata: JsonDict = {
-            "node_id": node.get("id"),
+            "node_id": node_id,
             "node_key": node.get("node_key"),
             "node_type": node.get("type"),
             "document_id": props.get("document_id"),
             "chunk_id": chunk_id,
             "chunk_index": props.get("chunk_index"),
             "source": source,
+            "retrieval_reason": retrieval_reason,
+            "evidence_quote": evidence_quote,
+            "evidence_score": evidence_score,
+            "evidence_count": len(evidence_rows),
         }
         if similarity is not None:
             metadata["similarity_score"] = round(float(similarity), 4)
@@ -251,19 +281,40 @@ class KGRetrieverService(BaseRetriever):
             if nid in seen_ids:
                 continue
             seen_ids.add(nid)
-            documents.append(self._node_to_document(node, similarity=node.get("similarity"), source="vector"))
+
+            sim = node.get("similarity")
+            reason = f"Vector similarity={sim:.4f}" if sim is not None else "Vector match"
+            logger.info(
+                "[Retrieval] SEED node=%s key=%s sim=%.4f reason=%s",
+                nid, node.get("node_key", "?"), sim or 0, reason,
+            )
+            documents.append(self._node_to_document(
+                node, similarity=sim, source="vector", retrieval_reason=reason,
+            ))
 
             if self.hop_limit >= 1:
                 neighbour_ids = [n for n in self._get_neighbour_ids(nid) if n not in seen_ids]
-                for nb in self._fetch_nodes_by_ids(neighbour_ids):
+                neighbours = self._fetch_nodes_by_ids(neighbour_ids)
+                for nb in neighbours:
                     nb_id = nb["id"]
                     if nb_id not in seen_ids:
                         seen_ids.add(nb_id)
-                        documents.append(self._node_to_document(nb, source="graph_expansion"))
+                        exp_reason = (
+                            f"Graph expansion from seed {nid[:8]}… "
+                            f"(edge weight >= {self.min_edge_weight})"
+                        )
+                        logger.info(
+                            "[Retrieval] EXPANDED node=%s key=%s via_seed=%s reason=%s",
+                            nb_id, nb.get("node_key", "?"), nid[:8], exp_reason,
+                        )
+                        documents.append(self._node_to_document(
+                            nb, source="graph_expansion", retrieval_reason=exp_reason,
+                        ))
 
-        logger.debug(
-            "Returning %d documents (%d seed + %d expanded)",
+        logger.info(
+            "[Retrieval] Complete: %d documents (%d seed + %d expanded) for query=%r",
             len(documents), len(seed_nodes), len(documents) - len(seed_nodes),
+            query[:80],
         )
         return documents
 
