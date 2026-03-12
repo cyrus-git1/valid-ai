@@ -59,7 +59,11 @@ SURVEY_AGENT_SYSTEM_PROMPT = (
     "- Tailor vocabulary and complexity to the target persona\n"
     "- Each question should have a clear purpose tied to the analysis findings\n"
     "- Avoid leading or biased questions\n"
-    "- Questions should be relevant to the organization's industry, scale, and audience\n\n"
+    "- Questions should be relevant to the organization's industry, scale, and audience\n"
+    "- If previously generated questions are provided, use them as suggestions: "
+    "build on their themes, avoid duplicating their exact topics, and fill gaps "
+    "they left. You may refine or rephrase a prior question if it fits better, "
+    "but do not copy them verbatim\n\n"
 )
 
 # ── Form context (per question type) ────────────────────────────────────────
@@ -225,7 +229,8 @@ SURVEY_GENERATION_PROMPT = ChatPromptTemplate.from_messages([
         "human",
         "Survey request: {request}\n\n"
         "Context analysis:\n{context_analysis}\n\n"
-        "Raw knowledge base context:{context_section}",
+        "Raw knowledge base context:{context_section}"
+        "{prior_questions_section}",
     ),
 ])
 

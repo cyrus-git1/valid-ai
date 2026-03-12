@@ -44,6 +44,7 @@ from src.prompts.survey_prompts import (
     get_question_type_instructions,
 )
 from src.services.search_service import SearchService
+from src.supabase.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class SurveyState(TypedDict, total=False):
     tenant_profile: str         # formatted tenant profile string
     context_analysis: str       # LLM-generated insights from context + profile
     profile_section: str
+    prior_questions: str        # formatted prior questions from survey_outputs
     raw_output: str
     survey: str              # final JSON string output
     context_used: int
@@ -153,11 +155,58 @@ def build_prompt(state: SurveyState) -> SurveyState:
         f"\n\nOrganization profile:\n{tenant_profile}" if profile_parts else ""
     )
 
+    # Fetch prior questions from survey_outputs for this tenant+client
+    prior_questions_section = ""
+    try:
+        sb = get_supabase()
+        prior_res = (
+            sb.table("survey_outputs")
+            .select("questions")
+            .eq("tenant_id", state["tenant_id"])
+            .eq("client_id", state["client_id"])
+            .eq("output_type", "survey")
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        )
+        if prior_res.data:
+            # Flatten all questions, deduplicate by label, cap at 30
+            seen_labels: set[str] = set()
+            prior_list: list[dict] = []
+            for row in prior_res.data:
+                questions = row.get("questions") or []
+                if isinstance(questions, str):
+                    try:
+                        questions = json.loads(questions)
+                    except json.JSONDecodeError:
+                        continue
+                for q in questions:
+                    label = (q.get("label") or "").strip().lower()
+                    if label and label not in seen_labels:
+                        seen_labels.add(label)
+                        prior_list.append(q)
+                    if len(prior_list) >= 30:
+                        break
+                if len(prior_list) >= 30:
+                    break
+
+            if prior_list:
+                formatted = "\n".join(
+                    f"- [{q.get('type', 'unknown')}] {q.get('label', '')}"
+                    for q in prior_list
+                )
+                prior_questions_section = (
+                    f"\n\nPreviously generated questions for this client:\n{formatted}"
+                )
+    except Exception as e:
+        logger.warning("Failed to fetch prior survey questions: %s", e)
+
     return {
         **state,
         "context": context_section,
         "tenant_profile": tenant_profile,
         "profile_section": profile_section,
+        "prior_questions": prior_questions_section,
         "status": "analyzing",
     }
 
@@ -222,6 +271,7 @@ def generate_survey(state: SurveyState) -> SurveyState:
             "context_section": state.get("context", ""),
             "profile_section": state.get("profile_section", ""),
             "question_type_instructions": question_type_instructions,
+            "prior_questions_section": state.get("prior_questions", ""),
         })
     except Exception as e:
         logger.exception("Survey generation failed")
