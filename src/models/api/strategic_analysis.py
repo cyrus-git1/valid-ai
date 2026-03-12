@@ -14,7 +14,7 @@ from src.models.base import TenantScoped, TenantScopedRequest
 
 
 class AnalysisParams(BaseModel):
-    """Shared tuning knobs reused across single, batch, and all requests."""
+    """Shared tuning knobs reused across single and all requests."""
 
     top_k: int = Field(default=10, description="Number of KG nodes to retrieve.")
     hop_limit: int = Field(default=1, description="Graph expansion hops.")
@@ -22,7 +22,7 @@ class AnalysisParams(BaseModel):
         default_factory=list,
         description=(
             "Additional search queries for Serper. If empty, one is auto-generated "
-            "from the focus_query and client profile."
+            "from the client profile."
         ),
     )
     llm_model: str = Field(default="gpt-4o-mini", description="LLM to use for analysis.")
@@ -41,9 +41,7 @@ class ActionPoint(BaseModel):
 
 
 class StrategicAnalysisResult(TenantScoped):
-    """Core analysis output — shared by single, batch, and all responses."""
-
-    focus_query: str
+    """Core analysis output — shared by single and all responses."""
 
     # Core outputs
     executive_summary: str
@@ -109,58 +107,18 @@ class StrategicAnalysisResponse(TenantScoped):
     generated_at: Optional[datetime] = None
 
 
-# ── Batch (multiple focus queries, same tenant+client) ────────────────────────
-
-
-class BatchAnalysisRequest(TenantScopedRequest):
-    """Request body for POST /strategic-analysis/generate/batch.
-
-    Runs multiple focus queries against the same tenant+client in sequence.
-    Shared context (KG, transcripts, summary, profile) is gathered once
-    and reused across all queries to avoid redundant data fetching.
-    """
-
-    focus_queries: List[str] = Field(
-        min_length=1,
-        description="List of business questions to analyse (1-10).",
-    )
-    top_k: int = Field(default=10, description="Number of KG nodes to retrieve per query.")
-    hop_limit: int = Field(default=1, description="Graph expansion hops.")
-    web_search_queries: List[str] = Field(
-        default_factory=list,
-        description="Shared web search queries applied to every focus query.",
-    )
-    llm_model: str = Field(default="gpt-4o-mini", description="LLM to use for analysis.")
-
-
-class BatchAnalysisResponse(TenantScoped):
-    """Response from the batch generate endpoint."""
-
-    total: int = Field(description="Number of focus queries submitted.")
-    completed: int = Field(description="Number that succeeded.")
-    failed: int = Field(default=0, description="Number that failed.")
-    results: List[StrategicAnalysisResult] = Field(default_factory=list)
-    errors: List[Dict[str, str]] = Field(
-        default_factory=list,
-        description="Per-query errors: [{focus_query, error}].",
-    )
-
-
 # ── All (every client_id under a tenant) ──────────────────────────────────────
 
 
 class AllAnalysisRequest(BaseModel):
     """Request body for POST /strategic-analysis/generate/all.
 
-    Runs the same focus query across every client_id that has ingested
-    data under the given tenant_id. Useful for cross-client benchmarking
-    or org-wide strategic reviews.
+    Runs an overall strategic summary across every client_id that has
+    ingested data under the given tenant_id. Useful for cross-client
+    benchmarking or org-wide strategic reviews.
     """
 
     tenant_id: UUID
-    focus_query: str = Field(
-        description="The business question to analyse across all clients.",
-    )
     client_profile: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Optional shared company labels applied to every client.",
@@ -178,7 +136,6 @@ class AllAnalysisResponse(BaseModel):
     """Response from the all-clients generate endpoint."""
 
     tenant_id: UUID
-    focus_query: str
     total_clients: int = Field(description="Number of client_ids discovered.")
     completed: int = Field(description="Number that succeeded.")
     failed: int = Field(default=0)

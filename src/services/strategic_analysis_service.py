@@ -10,10 +10,9 @@ Combines all tenant data sources into a single strategic analysis:
   - Client profile / company labels
   - External web search (Serper)
 
-Supports three modes:
-  - Single   — one focus query for one tenant+client
-  - Batch    — multiple focus queries for the same tenant+client
-  - All      — one focus query across every client under a tenant
+Supports two modes:
+  - Single   — overall strategic summary for one tenant+client
+  - All      — overall strategic summary across every client under a tenant
 
 Import
 ------
@@ -86,7 +85,7 @@ class StrategicAnalysisService(BaseAnalysisService):
     ) -> _SharedContext:
         """
         Fetch transcript count, transcript chunks, and context summary once.
-        These don't depend on the focus_query and can be reused across batch items.
+        These are reused across all analysis calls for the same tenant+client.
         """
         transcript_count = self._count_transcripts(tenant_id, client_id)
         depth = _depth_tier(transcript_count)
@@ -252,76 +251,23 @@ class StrategicAnalysisService(BaseAnalysisService):
             llm_model=llm_model,
         )
 
-    # ── Public: batch ─────────────────────────────────────────────────────────
-
-    def generate_batch(
-        self,
-        *,
-        tenant_id: UUID,
-        client_id: UUID,
-        focus_queries: List[str],
-        client_profile: Optional[Dict[str, Any]] = None,
-        top_k: int = 10,
-        hop_limit: int = 1,
-        web_search_queries: Optional[List[str]] = None,
-        llm_model: str = "gpt-4o-mini",
-    ) -> Dict[str, Any]:
-        """Run convergent analysis for multiple focus queries against the same
-        tenant+client. Shared context is gathered once and reused.
-        """
-        logger.info(
-            "Strategic analysis (batch): tenant=%s client=%s queries=%d",
-            tenant_id, client_id, len(focus_queries),
-        )
-
-        shared = self._gather_shared_context(tenant_id, client_id)
-        results: List[Dict[str, Any]] = []
-        errors: List[Dict[str, str]] = []
-
-        for query in focus_queries[:10]:
-            try:
-                result = self._run_analysis(
-                    focus_query=query,
-                    shared=shared,
-                    client_profile=client_profile,
-                    top_k=top_k,
-                    hop_limit=hop_limit,
-                    web_search_queries=web_search_queries,
-                    llm_model=llm_model,
-                )
-                results.append(result)
-            except Exception as e:
-                logger.warning("Batch query failed (%r): %s", query, e)
-                errors.append({"focus_query": query, "error": str(e)})
-
-        return {
-            "tenant_id": str(tenant_id),
-            "client_id": str(client_id),
-            "total": len(focus_queries[:10]),
-            "completed": len(results),
-            "failed": len(errors),
-            "results": results,
-            "errors": errors,
-        }
-
     # ── Public: all clients ───────────────────────────────────────────────────
 
     def generate_all(
         self,
         *,
         tenant_id: UUID,
-        focus_query: str,
         client_profile: Optional[Dict[str, Any]] = None,
         top_k: int = 10,
         hop_limit: int = 1,
         web_search_queries: Optional[List[str]] = None,
         llm_model: str = "gpt-4o-mini",
     ) -> Dict[str, Any]:
-        """Run the same focus query across every client_id under this tenant."""
+        """Run an overall strategic summary across every client_id under this tenant."""
         client_ids = self._list_client_ids(tenant_id)
         logger.info(
-            "Strategic analysis (all): tenant=%s clients=%d query=%r",
-            tenant_id, len(client_ids), focus_query[:60],
+            "Strategic analysis (all): tenant=%s clients=%d",
+            tenant_id, len(client_ids),
         )
 
         results: List[Dict[str, Any]] = []
@@ -331,7 +277,6 @@ class StrategicAnalysisService(BaseAnalysisService):
             try:
                 shared = self._gather_shared_context(tenant_id, cid)
                 result = self._run_analysis(
-                    focus_query=focus_query,
                     shared=shared,
                     client_profile=client_profile,
                     top_k=top_k,
@@ -348,7 +293,6 @@ class StrategicAnalysisService(BaseAnalysisService):
 
         return {
             "tenant_id": str(tenant_id),
-            "focus_query": focus_query,
             "total_clients": len(client_ids),
             "completed": len(results),
             "failed": len(errors),

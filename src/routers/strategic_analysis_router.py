@@ -5,9 +5,8 @@ Convergent problem-solving analysis that combines all tenant data sources
 (vectorized chunks, knowledge graph, context summaries, company labels,
 and Serper web search) to produce actionable strategic insights.
 
-POST /strategic-analysis/generate       — Overall strategic summary for one tenant+client
-POST /strategic-analysis/generate/batch — Multiple focus queries, same tenant+client
-POST /strategic-analysis/generate/all   — One focus query across all clients for a tenant
+POST /strategic-analysis/generate     — Overall strategic summary for one tenant+client
+POST /strategic-analysis/generate/all — Overall strategic summary across all clients for a tenant
 """
 from __future__ import annotations
 
@@ -19,8 +18,6 @@ from src.models.api.strategic_analysis import (
     ActionPoint,
     AllAnalysisRequest,
     AllAnalysisResponse,
-    BatchAnalysisRequest,
-    BatchAnalysisResponse,
     StrategicAnalysisRequest,
     StrategicAnalysisResponse,
     StrategicAnalysisResult,
@@ -43,7 +40,6 @@ def _dict_to_result(raw: dict) -> StrategicAnalysisResult:
     return StrategicAnalysisResult(
         tenant_id=raw["tenant_id"],
         client_id=raw["client_id"],
-        focus_query=raw["focus_query"],
         executive_summary=raw["executive_summary"],
         convergent_themes=raw.get("convergent_themes", []),
         action_points=action_points,
@@ -104,51 +100,6 @@ def generate_strategic_analysis(
     )
 
 
-# ── POST /strategic-analysis/generate/batch ───────────────────────────────────
-
-@router.post("/generate/batch", response_model=BatchAnalysisResponse)
-def generate_batch_analysis(
-    req: BatchAnalysisRequest,
-) -> BatchAnalysisResponse:
-    """
-    Run multiple focus queries against the same tenant+client.
-
-    Shared context (transcripts, context summary, profile) is gathered once
-    and reused across all queries to avoid redundant data fetching. Each
-    focus query still gets its own KG retrieval and web search.
-
-    Capped at 10 focus queries per request.
-    """
-    svc = StrategicAnalysisService(get_supabase())
-
-    try:
-        raw = svc.generate_batch(
-            tenant_id=req.tenant_id,
-            client_id=req.client_id,
-            focus_queries=req.focus_queries,
-            client_profile=req.client_profile,
-            top_k=req.top_k,
-            hop_limit=req.hop_limit,
-            web_search_queries=req.web_search_queries,
-            llm_model=req.llm_model,
-        )
-    except Exception as e:
-        logger.exception("Batch strategic analysis failed")
-        raise HTTPException(status_code=500, detail=f"Batch analysis failed: {e}")
-
-    results = [_dict_to_result(r) for r in raw.get("results", [])]
-
-    return BatchAnalysisResponse(
-        tenant_id=raw["tenant_id"],
-        client_id=raw["client_id"],
-        total=raw["total"],
-        completed=raw["completed"],
-        failed=raw.get("failed", 0),
-        results=results,
-        errors=raw.get("errors", []),
-    )
-
-
 # ── POST /strategic-analysis/generate/all ─────────────────────────────────────
 
 @router.post("/generate/all", response_model=AllAnalysisResponse)
@@ -156,8 +107,8 @@ def generate_all_analysis(
     req: AllAnalysisRequest,
 ) -> AllAnalysisResponse:
     """
-    Run the same focus query across every client_id that has ingested
-    data under the given tenant_id.
+    Run an overall strategic summary across every client_id that has
+    ingested data under the given tenant_id.
 
     Discovers all client_ids with documents, then runs a full convergent
     analysis for each. Useful for cross-client benchmarking or org-wide
@@ -168,7 +119,6 @@ def generate_all_analysis(
     try:
         raw = svc.generate_all(
             tenant_id=req.tenant_id,
-            focus_query=req.focus_query,
             client_profile=req.client_profile,
             top_k=req.top_k,
             hop_limit=req.hop_limit,
@@ -183,7 +133,6 @@ def generate_all_analysis(
 
     return AllAnalysisResponse(
         tenant_id=raw["tenant_id"],
-        focus_query=raw["focus_query"],
         total_clients=raw["total_clients"],
         completed=raw["completed"],
         failed=raw.get("failed", 0),
