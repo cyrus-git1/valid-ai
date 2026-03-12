@@ -31,4 +31,4 @@ scrapy
 trafilatura
 requests
 httpx
-playwright
+firecrawl-py
