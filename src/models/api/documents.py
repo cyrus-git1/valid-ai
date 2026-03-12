@@ -3,33 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from pydantic import BaseModel, Field
-
-
-class DocumentResponse(BaseModel):
-    id: str
-    tenant_id: str
-    client_id: Optional[str]
-    source_type: str
-    source_uri: Optional[str]
-    title: Optional[str]
-    metadata: Dict[str, Any]
-    created_at: datetime
-    updated_at: datetime
-
-
-class DocumentListResponse(BaseModel):
-    items: List[DocumentResponse]
-    total: int
-    limit: int
-    offset: int
-
-
-class DocumentUpdateRequest(BaseModel):
-    title: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
 
 
 class ChunkResponse(BaseModel):
@@ -44,11 +19,22 @@ class ChunkResponse(BaseModel):
     has_embedding: bool
 
 
-class ChunkListResponse(BaseModel):
-    items: List[ChunkResponse]
+class DocumentWithChunksResponse(BaseModel):
+    id: str
+    tenant_id: str
+    client_id: Optional[str]
+    source_type: str
+    source_uri: Optional[str]
+    title: Optional[str]
+    metadata: Dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    chunks: List[ChunkResponse] = Field(default_factory=list)
+
+
+class DocumentWithChunksListResponse(BaseModel):
+    items: List[DocumentWithChunksResponse]
     total: int
-    limit: int
-    offset: int
 
 
 class BulkDeleteRequest(BaseModel):
