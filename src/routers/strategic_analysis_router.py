@@ -5,7 +5,7 @@ Convergent problem-solving analysis that combines all tenant data sources
 (vectorized chunks, knowledge graph, context summaries, company labels,
 and Serper web search) to produce actionable strategic insights.
 
-POST /strategic-analysis/generate       — Single focus query for one tenant+client
+POST /strategic-analysis/generate       — Overall strategic summary for one tenant+client
 POST /strategic-analysis/generate/batch — Multiple focus queries, same tenant+client
 POST /strategic-analysis/generate/all   — One focus query across all clients for a tenant
 """
@@ -62,7 +62,8 @@ def generate_strategic_analysis(
     req: StrategicAnalysisRequest,
 ) -> StrategicAnalysisResponse:
     """
-    Generate a convergent strategic analysis for a single focus query.
+    Generate an overall strategic summary across all context and documents
+    for the given tenant+client.
 
     Pulls together KG chunks, context summary, client profile, Serper web
     search, and transcript data. Analysis depth scales with transcript count:
@@ -74,7 +75,6 @@ def generate_strategic_analysis(
         result = svc.generate_analysis(
             tenant_id=req.tenant_id,
             client_id=req.client_id,
-            focus_query=req.focus_query,
             client_profile=req.client_profile,
             top_k=req.top_k,
             hop_limit=req.hop_limit,
@@ -93,7 +93,6 @@ def generate_strategic_analysis(
     return StrategicAnalysisResponse(
         tenant_id=result["tenant_id"],
         client_id=result["client_id"],
-        focus_query=result["focus_query"],
         executive_summary=result["executive_summary"],
         convergent_themes=result.get("convergent_themes", []),
         action_points=action_points,

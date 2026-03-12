@@ -49,3 +49,18 @@ class ChunkListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class BulkDeleteRequest(BaseModel):
+    document_ids: List[str] = Field(
+        min_length=1,
+        description="List of document IDs to delete (with cascading chunk cleanup).",
+    )
+
+
+class BulkDeleteResponse(BaseModel):
+    deleted: int = Field(description="Number of documents successfully deleted.")
+    not_found: List[str] = Field(
+        default_factory=list,
+        description="Document IDs that were not found.",
+    )

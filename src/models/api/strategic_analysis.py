@@ -76,30 +76,27 @@ class StrategicAnalysisResult(TenantScoped):
 
 
 class StrategicAnalysisRequest(TenantScopedRequest):
-    """Request body for POST /strategic-analysis/generate (single)."""
+    """Request body for POST /strategic-analysis/generate (single).
 
-    focus_query: str = Field(
-        description=(
-            "The business question or area of focus for the analysis. "
-            "e.g. 'How can we improve customer retention?'"
-        ),
-    )
+    Produces an overall strategic summary across all context and documents
+    for the given tenant+client. No focus query needed — the analysis
+    synthesizes everything available.
+    """
+
     top_k: int = Field(default=10, description="Number of KG nodes to retrieve.")
     hop_limit: int = Field(default=1, description="Graph expansion hops.")
     web_search_queries: List[str] = Field(
         default_factory=list,
         description=(
             "Additional search queries for Serper. If empty, one is auto-generated "
-            "from the focus_query and client profile."
+            "from the client profile."
         ),
     )
     llm_model: str = Field(default="gpt-4o-mini", description="LLM to use for analysis.")
 
 
 class StrategicAnalysisResponse(TenantScoped):
-    """Response from the single generate endpoint."""
-
-    focus_query: str
+    """Response from the single generate endpoint (overall summary)."""
 
     executive_summary: str
     convergent_themes: List[str] = Field(default_factory=list)

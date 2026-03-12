@@ -1,4 +1,6 @@
 """
+src/services/context_summary_service.py
+-----------------------------------------
 Service layer for context summaries.
 
 Handles CRUD via Supabase RPCs / direct table queries, and orchestrates
@@ -12,10 +14,10 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from supabase import Client
 
+from src.services.base_service import BaseAnalysisService
 from src.services.search_service import SearchService
 
 logger = logging.getLogger(__name__)
@@ -47,11 +49,11 @@ CONTEXT_SUMMARY_PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-class ContextSummaryService:
+class ContextSummaryService(BaseAnalysisService):
     """Manages context summary CRUD and LLM-powered generation."""
 
     def __init__(self, supabase: Client):
-        self.sb = supabase
+        super().__init__(supabase)
 
     # ── Read ──────────────────────────────────────────────────────────────────
 
@@ -62,8 +64,9 @@ class ContextSummaryService:
         client_id: UUID,
     ) -> Optional[Dict[str, Any]]:
         """Fetch the current context summary for a tenant+client, or None."""
+        sb = self._require_supabase()
         res = (
-            self.sb.table("context_summaries")
+            sb.table("context_summaries")
             .select("*")
             .eq("tenant_id", str(tenant_id))
             .eq("client_id", str(client_id))
@@ -86,7 +89,8 @@ class ContextSummaryService:
         source_stats: Optional[Dict[str, Any]] = None,
     ) -> UUID:
         """Upsert a context summary row. Returns the row id."""
-        res = self.sb.rpc(
+        sb = self._require_supabase()
+        res = sb.rpc(
             "upsert_context_summary",
             {
                 "p_tenant_id": str(tenant_id),
@@ -108,8 +112,9 @@ class ContextSummaryService:
         client_id: UUID,
     ) -> bool:
         """Delete the context summary for a tenant+client. Returns True if deleted."""
+        sb = self._require_supabase()
         res = (
-            self.sb.table("context_summaries")
+            sb.table("context_summaries")
             .delete()
             .eq("tenant_id", str(tenant_id))
             .eq("client_id", str(client_id))
@@ -136,9 +141,6 @@ class ContextSummaryService:
         3. Prompt LLM to produce summary + topic tags
         4. Upsert into context_summaries
         5. Return the full row
-
-        Returns:
-            dict with keys: summary_row, regenerated, status
         """
         # Check existing
         if not force_regenerate:
@@ -175,25 +177,10 @@ class ContextSummaryService:
         else:
             context_str = "(No knowledge base content available yet.)"
 
-        # Build profile section
-        profile_section = ""
-        if client_profile:
-            parts = []
-            if client_profile.get("industry"):
-                parts.append(f"Industry: {client_profile['industry']}")
-            if client_profile.get("headcount"):
-                parts.append(f"Headcount: {client_profile['headcount']}")
-            if client_profile.get("revenue"):
-                parts.append(f"Revenue: {client_profile['revenue']}")
-            if client_profile.get("persona"):
-                parts.append(f"Target persona: {client_profile['persona']}")
-            if parts:
-                profile_section = (
-                    "Known tenant profile:\n" + "\n".join(parts) + "\n\n"
-                )
+        profile_section = self._build_profile_section(client_profile)
 
         # Call LLM
-        llm = ChatOpenAI(model=llm_model, temperature=0)
+        llm = self._create_llm(model=llm_model, temperature=0)
         chain = CONTEXT_SUMMARY_PROMPT | llm | StrOutputParser()
 
         try:
@@ -202,12 +189,10 @@ class ContextSummaryService:
                 "profile_section": profile_section,
             })
 
-            # Parse JSON response
             parsed = json.loads(raw_output)
             summary_text = parsed.get("summary", raw_output)
             topics = parsed.get("topics", [])
         except json.JSONDecodeError:
-            # LLM returned non-JSON — use raw text as summary
             summary_text = raw_output
             topics = []
         except Exception as e:

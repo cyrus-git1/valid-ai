@@ -30,8 +30,8 @@ from uuid import UUID
 
 from supabase import Client
 
-from src.processing.tokenization import document_bytes_to_chunks, web_scraped_json_to_chunks
-from src.processing.helpers import embed_texts
+from src.services.chunking_service import document_bytes_to_chunks, web_scraped_json_to_chunks
+from src.services.embedding_service import embed_texts
 from src.services.kg_service import KGService, KGBuildConfig
 from src.services.context_summary_service import ContextSummaryService
 
@@ -486,7 +486,7 @@ class IngestService:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Spider subprocess runner
-# Runs src/processing/run_scraper.py in a fresh subprocess on every call so
+# Runs src/services/scraper_service.py in a fresh subprocess on every call so
 # Scrapy's CrawlerProcess single-run-per-process limit is never hit inside
 # the long-running FastAPI server process.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,7 +496,7 @@ def _run_spider_subprocess(url: str) -> JsonDict:
         out_path = f.name
     try:
         subprocess.run(
-            ["python", "src/processing/run_scraper.py", url, out_path],
+            ["python", "src/services/scraper_service.py", url, out_path],
             check=True,
             capture_output=True,
         )

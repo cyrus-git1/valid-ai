@@ -4,9 +4,11 @@
 CRUD over the documents table and their associated chunks.
 
 GET    /documents                      — List documents (paginated, scoped to tenant+client)
+GET    /documents/by-tenant            — List all documents for a tenant (no client_id required)
 GET    /documents/{document_id}        — Get a single document
 PATCH  /documents/{document_id}        — Update title or metadata
 DELETE /documents/{document_id}        — Delete document + cascade chunks + KG nodes
+DELETE /documents/bulk                 — Delete multiple documents + cascade chunks + KG nodes
 GET    /documents/{document_id}/chunks — List chunks for a document
 """
 from __future__ import annotations
@@ -18,6 +20,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from src.supabase.supabase_client import get_supabase
 from src.models.api.documents import (
+    BulkDeleteRequest,
+    BulkDeleteResponse,
     ChunkListResponse,
     ChunkResponse,
     DocumentListResponse,
@@ -71,6 +75,73 @@ def list_documents(
     total = res.count or 0
 
     return DocumentListResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/by-tenant", response_model=DocumentListResponse)
+def list_documents_by_tenant(
+    tenant_id: UUID = Query(...),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> DocumentListResponse:
+    """
+    List all documents for a tenant (across all clients), newest first.
+    Supports pagination via limit/offset.
+    """
+    sb = get_supabase()
+
+    res = (
+        sb.table("documents")
+        .select("*", count="exact")
+        .eq("tenant_id", str(tenant_id))
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+
+    items = [DocumentResponse(**row) for row in (res.data or [])]
+    total = res.count or 0
+
+    return DocumentListResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.delete("/bulk", response_model=BulkDeleteResponse)
+def bulk_delete_documents(
+    body: BulkDeleteRequest,
+    tenant_id: UUID = Query(...),
+) -> BulkDeleteResponse:
+    """
+    Delete multiple documents and all their associated data in one request.
+
+    Cascade deletes (via ON DELETE CASCADE in SQL schema):
+      - chunks (03_chunks.sql)
+      - kg_node_evidence, kg_edge_evidence (via chunk foreign keys)
+      - KG edges between deleted nodes (Postgres cascade)
+
+    Documents not found are silently skipped and reported in the response.
+    """
+    sb = get_supabase()
+    deleted = 0
+    not_found: list[str] = []
+
+    for doc_id in body.document_ids:
+        # Check existence
+        res = (
+            sb.table("documents")
+            .select("id")
+            .eq("id", doc_id)
+            .eq("tenant_id", str(tenant_id))
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            not_found.append(doc_id)
+            continue
+
+        sb.table("documents").delete().eq("id", doc_id).eq("tenant_id", str(tenant_id)).execute()
+        deleted += 1
+        logger.info("Bulk-deleted document %s", doc_id)
+
+    return BulkDeleteResponse(deleted=deleted, not_found=not_found)
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)

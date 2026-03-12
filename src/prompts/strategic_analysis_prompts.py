@@ -95,7 +95,10 @@ STRATEGIC_ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
     ),
     (
         "human",
-        "FOCUS QUESTION: {focus_query}\n\n"
+        "OBJECTIVE: Produce an overall strategic summary that synthesizes ALL context "
+        "and documents available for this tenant and client. This is not focused on a "
+        "single question — instead, draw insights across the entire body of ingested "
+        "materials to surface the most important themes, opportunities, and risks.\n\n"
         "── INTERNAL KNOWLEDGE BASE CONTEXT ──\n"
         "{kg_context}\n\n"
         "── CONTEXT SUMMARY ──\n"
@@ -104,6 +107,6 @@ STRATEGIC_ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
         "{transcript_context}\n\n"
         "── EXTERNAL WEB SEARCH RESULTS ──\n"
         "{web_context}\n\n"
-        "Produce the convergent strategic analysis.",
+        "Produce the convergent strategic analysis as an overall summary of all available data.",
     ),
 ])

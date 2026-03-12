@@ -8,66 +8,56 @@ Scoped by tenant_id + survey_id (documents linked to a survey).
 """
 from __future__ import annotations
 
-import json
 import logging
-import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
 from supabase import Client
 
 from src.prompts.transcript_insights_prompts import TRANSCRIPT_INSIGHTS_PROMPT
+from src.services.base_service import BaseAnalysisService
 
 logger = logging.getLogger(__name__)
 
 
-class TranscriptInsightsService:
+class TranscriptInsightsService(BaseAnalysisService):
     """Generate a summary and actionable insights from VTT transcript chunks."""
 
-    def __init__(self, supabase: Client):
-        self.sb = supabase
+    _FALLBACK_PARSED = {
+        "summary": "",
+        "actionable_insights": [],
+    }
 
-    # ── Data retrieval ────────────────────────────────────────────────────
+    def __init__(self, supabase: Optional[Client] = None):
+        super().__init__(supabase)
 
-    def _get_transcript_chunks(
+    # ── Shared LLM pipeline ──────────────────────────────────────────────
+
+    def _run_insights(
         self,
-        tenant_id: UUID,
-        survey_id: UUID,
-        limit: int = 60,
-    ) -> tuple[List[Dict[str, Any]], int]:
-        """Fetch VTT chunks scoped to a tenant + survey.
+        *,
+        transcript_context: str,
+        transcript_count: int | str,
+        chunk_count: int | str,
+        llm_model: str,
+    ) -> Dict[str, Any] | None:
+        """Call LLM and parse result. Returns parsed dict or None on failure."""
+        llm = self._create_llm(model=llm_model, temperature=0.15)
+        chain = TRANSCRIPT_INSIGHTS_PROMPT | llm | StrOutputParser()
 
-        Returns (chunks, transcript_doc_count).
-        """
-        try:
-            doc_res = (
-                self.sb.table("documents")
-                .select("id")
-                .eq("tenant_id", str(tenant_id))
-                .eq("client_id", str(survey_id))
-                .eq("source_type", "vtt")
-                .execute()
-            )
-            doc_ids = [row["id"] for row in (doc_res.data or [])]
-            if not doc_ids:
-                return [], 0
+        raw_output = chain.invoke({
+            "transcript_count": str(transcript_count),
+            "chunk_count": str(chunk_count),
+            "transcript_context": transcript_context,
+        })
 
-            chunk_res = (
-                self.sb.table("chunks")
-                .select("content, chunk_index, document_id, metadata")
-                .eq("tenant_id", str(tenant_id))
-                .in_("document_id", doc_ids)
-                .order("chunk_index")
-                .limit(limit)
-                .execute()
-            )
-            return chunk_res.data or [], len(doc_ids)
-        except Exception as e:
-            logger.warning("Failed to fetch transcript chunks: %s", e)
-            return [], 0
+        parsed = self._parse_llm_json(raw_output, fallback_keys=self._FALLBACK_PARSED)
+        if "raw_output" in parsed:
+            parsed["summary"] = parsed.pop("raw_output")
+
+        return parsed
 
     # ── Public: from raw VTT content ─────────────────────────────────────
 
@@ -98,15 +88,13 @@ class TranscriptInsightsService:
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             }
 
-        llm = ChatOpenAI(model=llm_model, temperature=0.15)
-        chain = TRANSCRIPT_INSIGHTS_PROMPT | llm | StrOutputParser()
-
         try:
-            raw_output = chain.invoke({
-                "transcript_count": "1",
-                "chunk_count": "1",
-                "transcript_context": transcript_context,
-            })
+            parsed = self._run_insights(
+                transcript_context=transcript_context,
+                transcript_count=1,
+                chunk_count=1,
+                llm_model=llm_model,
+            )
         except Exception as e:
             logger.exception("Transcript insights LLM call failed")
             return {
@@ -119,24 +107,6 @@ class TranscriptInsightsService:
                 "status": "failed",
                 "error": str(e),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-        parsed = None
-        try:
-            parsed = json.loads(raw_output)
-        except json.JSONDecodeError:
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_output)
-            if match:
-                try:
-                    parsed = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-
-        if parsed is None:
-            logger.warning("LLM returned non-JSON — using raw text as summary")
-            parsed = {
-                "summary": raw_output,
-                "actionable_insights": [],
             }
 
         return {
@@ -170,9 +140,12 @@ class TranscriptInsightsService:
             "Transcript insights: tenant=%s survey=%s", tenant_id, survey_id,
         )
 
-        chunks, transcript_count = self._get_transcript_chunks(
+        chunks = self._get_transcript_chunks(
             tenant_id, survey_id, limit=chunk_limit,
         )
+
+        # Count transcript documents
+        transcript_count = self._count_transcripts(tenant_id, survey_id)
 
         if not chunks:
             return {
@@ -187,23 +160,15 @@ class TranscriptInsightsService:
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             }
 
-        # Build transcript context string
-        transcript_context = "\n\n---\n\n".join(
-            f"[Excerpt {i + 1}] {c['content']}"
-            for i, c in enumerate(chunks)
-            if c.get("content", "").strip()
-        )
-
-        # Call LLM
-        llm = ChatOpenAI(model=llm_model, temperature=0.15)
-        chain = TRANSCRIPT_INSIGHTS_PROMPT | llm | StrOutputParser()
+        transcript_context = self._build_transcript_context(chunks)
 
         try:
-            raw_output = chain.invoke({
-                "transcript_count": str(transcript_count),
-                "chunk_count": str(len(chunks)),
-                "transcript_context": transcript_context,
-            })
+            parsed = self._run_insights(
+                transcript_context=transcript_context,
+                transcript_count=transcript_count,
+                chunk_count=len(chunks),
+                llm_model=llm_model,
+            )
         except Exception as e:
             logger.exception("Transcript insights LLM call failed")
             return {
@@ -216,25 +181,6 @@ class TranscriptInsightsService:
                 "status": "failed",
                 "error": str(e),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-        # Parse JSON (with markdown code-block fallback)
-        parsed = None
-        try:
-            parsed = json.loads(raw_output)
-        except json.JSONDecodeError:
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_output)
-            if match:
-                try:
-                    parsed = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-
-        if parsed is None:
-            logger.warning("LLM returned non-JSON — using raw text as summary")
-            parsed = {
-                "summary": raw_output,
-                "actionable_insights": [],
             }
 
         return {

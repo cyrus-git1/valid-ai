@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from langchain_core.tools import tool
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 
-from src.processing.tokenization import document_bytes_to_chunks
+from src.services.chunking_service import document_bytes_to_chunks
 from src.services.ingest_service import IngestService
 from src.supabase.supabase_client import get_supabase
 

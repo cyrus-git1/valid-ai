@@ -10,10 +10,6 @@ Combines all tenant data sources into a single strategic analysis:
   - Client profile / company labels
   - External web search (Serper)
 
-The analysis depth scales with the number of video transcripts
-ingested for the tenant, enabling richer longitudinal insights
-as more conversational data accumulates.
-
 Supports three modes:
   - Single   — one focus query for one tenant+client
   - Batch    — multiple focus queries for the same tenant+client
@@ -25,22 +21,20 @@ Import
 """
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
 from supabase import Client
 
 from src.prompts.strategic_analysis_prompts import (
     DEPTH_INSTRUCTIONS,
     STRATEGIC_ANALYSIS_PROMPT,
 )
+from src.services.base_service import BaseAnalysisService
 from src.services.context_summary_service import ContextSummaryService
 from src.services.search_service import SearchService
 from src.services.serper_service import SerperService
@@ -77,106 +71,11 @@ class _SharedContext:
 
 # ── Service ───────────────────────────────────────────────────────────────────
 
-class StrategicAnalysisService:
+class StrategicAnalysisService(BaseAnalysisService):
     """Orchestrates convergent analysis across all tenant data sources."""
 
     def __init__(self, supabase: Client):
-        self.sb = supabase
-
-    # ── Data gathering helpers ────────────────────────────────────────────────
-
-    def _count_transcripts(self, tenant_id: UUID, client_id: UUID) -> int:
-        """Count documents with source_type 'vtt' for the tenant+client."""
-        try:
-            res = (
-                self.sb.table("documents")
-                .select("id", count="exact")
-                .eq("tenant_id", str(tenant_id))
-                .eq("client_id", str(client_id))
-                .eq("source_type", "vtt")
-                .execute()
-            )
-            return res.count or 0
-        except Exception as e:
-            logger.warning("Failed to count transcripts: %s", e)
-            return 0
-
-    def _get_transcript_chunks(
-        self,
-        tenant_id: UUID,
-        client_id: UUID,
-        limit: int = 30,
-    ) -> List[Dict[str, Any]]:
-        """Fetch chunks that belong to transcript (vtt) documents."""
-        try:
-            doc_res = (
-                self.sb.table("documents")
-                .select("id")
-                .eq("tenant_id", str(tenant_id))
-                .eq("client_id", str(client_id))
-                .eq("source_type", "vtt")
-                .execute()
-            )
-            doc_ids = [row["id"] for row in (doc_res.data or [])]
-            if not doc_ids:
-                return []
-
-            chunk_res = (
-                self.sb.table("chunks")
-                .select("content, chunk_index, document_id, metadata")
-                .eq("tenant_id", str(tenant_id))
-                .in_("document_id", doc_ids)
-                .order("chunk_index")
-                .limit(limit)
-                .execute()
-            )
-            return chunk_res.data or []
-        except Exception as e:
-            logger.warning("Failed to fetch transcript chunks: %s", e)
-            return []
-
-    def _list_client_ids(self, tenant_id: UUID) -> List[UUID]:
-        """Return distinct client_ids that have at least one document for this tenant."""
-        try:
-            res = (
-                self.sb.table("documents")
-                .select("client_id")
-                .eq("tenant_id", str(tenant_id))
-                .execute()
-            )
-            seen: set[str] = set()
-            client_ids: List[UUID] = []
-            for row in (res.data or []):
-                cid = row.get("client_id")
-                if cid and cid not in seen:
-                    seen.add(cid)
-                    client_ids.append(UUID(cid))
-            return client_ids
-        except Exception as e:
-            logger.warning("Failed to list client_ids for tenant %s: %s", tenant_id, e)
-            return []
-
-    def _build_profile_section(self, client_profile: Optional[Dict[str, Any]]) -> str:
-        if not client_profile:
-            return ""
-        parts = []
-        if client_profile.get("industry"):
-            parts.append(f"Industry: {client_profile['industry']}")
-        if client_profile.get("headcount"):
-            parts.append(f"Headcount: {client_profile['headcount']}")
-        demo = client_profile.get("demographic", {})
-        if isinstance(demo, dict):
-            if demo.get("age_range"):
-                parts.append(f"Target age range: {demo['age_range']}")
-            if demo.get("income_bracket"):
-                parts.append(f"Income bracket: {demo['income_bracket']}")
-            if demo.get("occupation"):
-                parts.append(f"Occupation: {demo['occupation']}")
-            if demo.get("location"):
-                parts.append(f"Location: {demo['location']}")
-        if not parts:
-            return ""
-        return "Company / Client Profile:\n" + "\n".join(parts) + "\n"
+        super().__init__(supabase)
 
     # ── Shared context pre-fetch ──────────────────────────────────────────────
 
@@ -192,22 +91,11 @@ class StrategicAnalysisService:
         transcript_count = self._count_transcripts(tenant_id, client_id)
         depth = _depth_tier(transcript_count)
 
-        # Transcript chunks
         transcript_chunks = self._get_transcript_chunks(
             tenant_id, client_id,
             limit=15 + (transcript_count * 5),
         )
-        if transcript_chunks:
-            transcript_context = "\n\n---\n\n".join(
-                f"[Transcript Excerpt {i + 1}] {c['content']}"
-                for i, c in enumerate(transcript_chunks)
-                if c.get("content", "").strip()
-            )
-        else:
-            transcript_context = (
-                "(No video transcript data available yet. "
-                "Ingest .vtt transcripts to unlock deeper analysis.)"
-            )
+        transcript_context = self._build_transcript_context(transcript_chunks)
 
         # Context summary
         summary_svc = ContextSummaryService(self.sb)
@@ -238,7 +126,7 @@ class StrategicAnalysisService:
     def _run_analysis(
         self,
         *,
-        focus_query: str,
+        focus_query: Optional[str] = None,
         shared: _SharedContext,
         client_profile: Optional[Dict[str, Any]],
         top_k: int,
@@ -246,10 +134,10 @@ class StrategicAnalysisService:
         web_search_queries: Optional[List[str]],
         llm_model: str,
     ) -> Dict[str, Any]:
-        """
-        Execute the convergent analysis for a single focus_query using
-        pre-fetched shared context.
-        """
+        """Execute the convergent analysis for a single focus_query (or overall summary)."""
+
+        # Default query for KG retrieval when no focus_query provided
+        search_query = focus_query or "overall strategic summary"
 
         # KG retrieval (query-specific)
         search_svc = SearchService(
@@ -257,7 +145,7 @@ class StrategicAnalysisService:
         )
         try:
             kg_docs = search_svc.graph_search(
-                focus_query, top_k=top_k, hop_limit=hop_limit,
+                search_query, top_k=top_k, hop_limit=hop_limit,
             )
         except Exception as e:
             logger.warning("KG retrieval failed: %s", e)
@@ -276,7 +164,7 @@ class StrategicAnalysisService:
             industry = ""
             if client_profile and client_profile.get("industry"):
                 industry = client_profile["industry"] + " "
-            queries = [f"{industry}{focus_query}"]
+            queries = [f"{industry}{search_query}"]
 
         web_parts = []
         for q in queries[:3]:
@@ -290,11 +178,10 @@ class StrategicAnalysisService:
         )
 
         # LLM call
-        llm = ChatOpenAI(model=llm_model, temperature=0.1)
+        llm = self._create_llm(model=llm_model, temperature=0.1)
         chain = STRATEGIC_ANALYSIS_PROMPT | llm | StrOutputParser()
 
         raw_output = chain.invoke({
-            "focus_query": focus_query,
             "kg_context": kg_context,
             "context_summary": shared.context_summary,
             "transcript_context": shared.transcript_context,
@@ -305,16 +192,14 @@ class StrategicAnalysisService:
         })
 
         # Parse
-        try:
-            parsed = json.loads(raw_output)
-        except json.JSONDecodeError:
-            logger.warning("LLM returned non-JSON — wrapping as executive summary.")
-            parsed = {
-                "executive_summary": raw_output,
-                "convergent_themes": [],
-                "action_points": [],
-                "future_recommendations": [],
-            }
+        parsed = self._parse_llm_json(raw_output, fallback_keys={
+            "executive_summary": "",
+            "convergent_themes": [],
+            "action_points": [],
+            "future_recommendations": [],
+        })
+        if "raw_output" in parsed:
+            parsed["executive_summary"] = parsed.pop("raw_output")
 
         sources_used = {
             "kg_chunks_retrieved": len(kg_docs),
@@ -323,10 +208,9 @@ class StrategicAnalysisService:
             "context_summary_available": shared.context_summary_available,
         }
 
-        return {
+        result = {
             "tenant_id": str(shared.tenant_id),
             "client_id": str(shared.client_id),
-            "focus_query": focus_query,
             "executive_summary": parsed.get("executive_summary", ""),
             "convergent_themes": parsed.get("convergent_themes", []),
             "action_points": parsed.get("action_points", []),
@@ -336,6 +220,9 @@ class StrategicAnalysisService:
             "sources_used": sources_used,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+        if focus_query is not None:
+            result["focus_query"] = focus_query
+        return result
 
     # ── Public: single ────────────────────────────────────────────────────────
 
@@ -344,21 +231,19 @@ class StrategicAnalysisService:
         *,
         tenant_id: UUID,
         client_id: UUID,
-        focus_query: str,
         client_profile: Optional[Dict[str, Any]] = None,
         top_k: int = 10,
         hop_limit: int = 1,
         web_search_queries: Optional[List[str]] = None,
         llm_model: str = "gpt-4o-mini",
     ) -> Dict[str, Any]:
-        """Run the full convergent analysis pipeline for a single focus query."""
+        """Run the full convergent analysis pipeline as an overall summary of all context and documents."""
         logger.info(
             "Strategic analysis (single): tenant=%s client=%s",
             tenant_id, client_id,
         )
         shared = self._gather_shared_context(tenant_id, client_id)
         return self._run_analysis(
-            focus_query=focus_query,
             shared=shared,
             client_profile=client_profile,
             top_k=top_k,
@@ -381,8 +266,7 @@ class StrategicAnalysisService:
         web_search_queries: Optional[List[str]] = None,
         llm_model: str = "gpt-4o-mini",
     ) -> Dict[str, Any]:
-        """
-        Run convergent analysis for multiple focus queries against the same
+        """Run convergent analysis for multiple focus queries against the same
         tenant+client. Shared context is gathered once and reused.
         """
         logger.info(
@@ -394,7 +278,7 @@ class StrategicAnalysisService:
         results: List[Dict[str, Any]] = []
         errors: List[Dict[str, str]] = []
 
-        for query in focus_queries[:10]:  # cap at 10
+        for query in focus_queries[:10]:
             try:
                 result = self._run_analysis(
                     focus_query=query,
@@ -433,10 +317,7 @@ class StrategicAnalysisService:
         web_search_queries: Optional[List[str]] = None,
         llm_model: str = "gpt-4o-mini",
     ) -> Dict[str, Any]:
-        """
-        Run the same focus query across every client_id that has data
-        under this tenant_id.
-        """
+        """Run the same focus query across every client_id under this tenant."""
         client_ids = self._list_client_ids(tenant_id)
         logger.info(
             "Strategic analysis (all): tenant=%s clients=%d query=%r",

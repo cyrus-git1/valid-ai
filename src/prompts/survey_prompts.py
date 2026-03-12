@@ -50,7 +50,10 @@ SURVEY_AGENT_SYSTEM_PROMPT = (
     "the user's request, the context analysis, and the organization profile provided.\n\n"
     "Rules:\n"
     "- Generate 5-15 questions depending on the scope\n"
-    "- Use a MIX of question types from the allowed types listed below\n"
+    "- Use a DIVERSE MIX of question types from the allowed types listed below — "
+    "do not rely only on simple types like multiple_choice and rating. "
+    "Actively consider interactive types like card_sort and ranking when the topic "
+    "involves categorization, prioritization, or grouping\n"
     "- Questions MUST be informed by the context analysis — reference specific industry "
     "trends, organization characteristics, and content themes identified\n"
     "- Tailor vocabulary and complexity to the target persona\n"
@@ -105,6 +108,8 @@ QUESTION_TYPE_PROMPTS: Dict[str, str] = {
         "For ranking questions:\n"
         "- Provide 3-6 items to rank in the \"items\" array (array of strings)\n"
         "- Respondents will drag-and-drop to order them by preference\n"
+        "- Use when you need to understand relative priorities or preferences "
+        "(e.g., ranking features, values, or concerns by importance)\n"
     ),
     "card_sort": (
         "For card_sort questions:\n"
@@ -112,6 +117,11 @@ QUESTION_TYPE_PROMPTS: Dict[str, str] = {
         "- Provide \"categories\" as an array of objects, each with \"id\" (UUID4) and \"label\"\n"
         "- Respondents sort cards into the defined categories\n"
         "- Use 3-6 cards and 2-4 categories\n"
+        "- Use card_sort when respondents need to classify or categorize concepts "
+        "(e.g., sorting tasks into urgency levels, grouping features into themes, "
+        "categorizing pain points by department, or mapping skills to proficiency tiers)\n"
+        "- Card sort is especially valuable for understanding how respondents mentally "
+        "organize information and for gathering categorization data\n"
     ),
 }
 
@@ -233,7 +243,9 @@ QUESTION_RECOMMENDATION_PROMPT = ChatPromptTemplate.from_messages([
         "- Improve the survey's ability to surface actionable insights\n"
         "- Complement (not duplicate) the existing questions\n"
         "- Follow up on interesting angles opened by current questions\n"
-        "- Maintain variety in question types where possible\n\n"
+        "- Actively diversify question types — if the existing survey lacks interactive "
+        "types like card_sort or ranking, strongly prefer recommending those. "
+        "Card sort is ideal for any question involving categorization or grouping\n\n"
         "Return a JSON object with two keys:\n"
         "  \"reasoning\": a short paragraph explaining why these questions are recommended\n"
         "  \"questions\": a JSON array of question objects\n\n"

@@ -10,19 +10,17 @@ Supports three execution modes:
 """
 from __future__ import annotations
 
-import json
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
 from supabase import Client
 
 from src.prompts.sentiment_prompts import SENTIMENT_ANALYSIS_PROMPT
+from src.services.base_service import BaseAnalysisService
 from src.services.context_summary_service import ContextSummaryService
 
 logger = logging.getLogger(__name__)
@@ -45,106 +43,19 @@ class _SharedContext:
 # ── Service ──────────────────────────────────────────────────────────────────
 
 
-class SentimentAnalysisService:
+class SentimentAnalysisService(BaseAnalysisService):
     """Orchestrates sentiment analysis of VTT transcript chunks."""
 
-    def __init__(self, supabase: Client):
-        self.sb = supabase
+    _FALLBACK_PARSED = {
+        "overall_sentiment": {"positive": 0.33, "negative": 0.33, "neutral": 0.34},
+        "dominant_sentiment": "neutral",
+        "themes": [],
+        "notable_quotes": [],
+        "summary": "",
+    }
 
-    # ── Data gathering helpers ────────────────────────────────────────────
-
-    def _count_transcripts(self, tenant_id: UUID, client_id: UUID) -> int:
-        try:
-            res = (
-                self.sb.table("documents")
-                .select("id", count="exact")
-                .eq("tenant_id", str(tenant_id))
-                .eq("client_id", str(client_id))
-                .eq("source_type", "vtt")
-                .execute()
-            )
-            return res.count or 0
-        except Exception as e:
-            logger.warning("Failed to count transcripts: %s", e)
-            return 0
-
-    def _get_transcript_chunks(
-        self,
-        tenant_id: UUID,
-        client_id: UUID,
-        limit: int = 50,
-    ) -> List[Dict[str, Any]]:
-        """Fetch chunks belonging to VTT transcript documents."""
-        try:
-            doc_res = (
-                self.sb.table("documents")
-                .select("id")
-                .eq("tenant_id", str(tenant_id))
-                .eq("client_id", str(client_id))
-                .eq("source_type", "vtt")
-                .execute()
-            )
-            doc_ids = [row["id"] for row in (doc_res.data or [])]
-            if not doc_ids:
-                return []
-
-            chunk_res = (
-                self.sb.table("chunks")
-                .select("content, chunk_index, document_id, metadata")
-                .eq("tenant_id", str(tenant_id))
-                .in_("document_id", doc_ids)
-                .order("chunk_index")
-                .limit(limit)
-                .execute()
-            )
-            return chunk_res.data or []
-        except Exception as e:
-            logger.warning("Failed to fetch transcript chunks: %s", e)
-            return []
-
-    def _list_client_ids(self, tenant_id: UUID) -> List[UUID]:
-        """Discover all unique client_ids that have documents under a tenant."""
-        try:
-            res = (
-                self.sb.table("documents")
-                .select("client_id")
-                .eq("tenant_id", str(tenant_id))
-                .execute()
-            )
-            seen: set[str] = set()
-            client_ids: List[UUID] = []
-            for row in (res.data or []):
-                cid = row.get("client_id")
-                if cid and cid not in seen:
-                    seen.add(cid)
-                    client_ids.append(UUID(cid))
-            return client_ids
-        except Exception as e:
-            logger.warning("Failed to list client_ids: %s", e)
-            return []
-
-    def _build_profile_section(self, client_profile: Optional[Dict[str, Any]]) -> str:
-        if not client_profile:
-            return ""
-        parts: List[str] = []
-        if client_profile.get("industry"):
-            parts.append(f"Industry: {client_profile['industry']}")
-        if client_profile.get("headcount"):
-            parts.append(f"Headcount: {client_profile['headcount']}")
-        if client_profile.get("revenue"):
-            parts.append(f"Revenue: {client_profile['revenue']}")
-        if client_profile.get("company_name"):
-            parts.append(f"Company: {client_profile['company_name']}")
-        if client_profile.get("persona"):
-            parts.append(f"Target persona: {client_profile['persona']}")
-        demo = client_profile.get("demographic", {})
-        if isinstance(demo, dict):
-            for key in ("age_range", "income_bracket", "occupation", "location"):
-                if demo.get(key):
-                    parts.append(f"{key.replace('_', ' ').title()}: {demo[key]}")
-        if not parts:
-            return ""
-        return "Company / Client Profile:\n" + "\n".join(parts) + "\n\n"
+    def __init__(self, supabase: Optional[Client] = None):
+        super().__init__(supabase)
 
     # ── Shared context ────────────────────────────────────────────────────
 
@@ -156,19 +67,8 @@ class SentimentAnalysisService:
     ) -> _SharedContext:
         """Fetch transcript chunks and context summary once for reuse."""
         transcript_count = self._count_transcripts(tenant_id, client_id)
-
         chunks = self._get_transcript_chunks(tenant_id, client_id, limit=chunk_limit)
-        if chunks:
-            transcript_context = "\n\n---\n\n".join(
-                f"[Transcript Excerpt {i + 1}] {c['content']}"
-                for i, c in enumerate(chunks)
-                if c.get("content", "").strip()
-            )
-        else:
-            transcript_context = (
-                "(No video transcript data available. "
-                "Ingest .vtt transcripts to enable sentiment analysis.)"
-            )
+        transcript_context = self._build_transcript_context(chunks)
 
         # Fetch existing context summary if available
         summary_svc = ContextSummaryService(self.sb)
@@ -203,7 +103,6 @@ class SentimentAnalysisService:
     ) -> Dict[str, Any]:
         """Build prompt, call LLM, parse JSON output."""
 
-        # Build focus instructions
         if focus_query:
             focus_instructions = (
                 f"FOCUS AREA: {focus_query}\n"
@@ -216,7 +115,7 @@ class SentimentAnalysisService:
 
         profile_section = self._build_profile_section(client_profile)
 
-        llm = ChatOpenAI(model=llm_model, temperature=0.1)
+        llm = self._create_llm(model=llm_model, temperature=0.1)
         chain = SENTIMENT_ANALYSIS_PROMPT | llm | StrOutputParser()
 
         raw_output = chain.invoke({
@@ -228,27 +127,10 @@ class SentimentAnalysisService:
             "context_summary": shared.context_summary,
         })
 
-        # Parse JSON (with markdown code-block fallback)
-        parsed = None
-        try:
-            parsed = json.loads(raw_output)
-        except json.JSONDecodeError:
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_output)
-            if match:
-                try:
-                    parsed = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-
-        if parsed is None:
-            logger.warning("LLM returned non-JSON — wrapping as summary")
-            parsed = {
-                "overall_sentiment": {"positive": 0.33, "negative": 0.33, "neutral": 0.34},
-                "dominant_sentiment": "neutral",
-                "themes": [],
-                "notable_quotes": [],
-                "summary": raw_output,
-            }
+        parsed = self._parse_llm_json(raw_output, fallback_keys=self._FALLBACK_PARSED)
+        # If fallback was used, put raw_output into summary
+        if "raw_output" in parsed:
+            parsed["summary"] = parsed.pop("raw_output")
 
         return {
             "tenant_id": str(shared.tenant_id),
@@ -279,11 +161,9 @@ class SentimentAnalysisService:
             tenant_id, survey_id,
         )
 
-        transcript_context = vtt_content.strip() or (
-            "(No transcript content provided.)"
-        )
+        transcript_context = vtt_content.strip() or "(No transcript content provided.)"
 
-        llm = ChatOpenAI(model=llm_model, temperature=0.1)
+        llm = self._create_llm(model=llm_model, temperature=0.1)
         chain = SENTIMENT_ANALYSIS_PROMPT | llm | StrOutputParser()
 
         raw_output = chain.invoke({
@@ -295,26 +175,9 @@ class SentimentAnalysisService:
             "context_summary": "(Not applicable — raw VTT provided.)",
         })
 
-        parsed = None
-        try:
-            parsed = json.loads(raw_output)
-        except json.JSONDecodeError:
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_output)
-            if match:
-                try:
-                    parsed = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-
-        if parsed is None:
-            logger.warning("LLM returned non-JSON — wrapping as summary")
-            parsed = {
-                "overall_sentiment": {"positive": 0.33, "negative": 0.33, "neutral": 0.34},
-                "dominant_sentiment": "neutral",
-                "themes": [],
-                "notable_quotes": [],
-                "summary": raw_output,
-            }
+        parsed = self._parse_llm_json(raw_output, fallback_keys=self._FALLBACK_PARSED)
+        if "raw_output" in parsed:
+            parsed["summary"] = parsed.pop("raw_output")
 
         return {
             "tenant_id": str(tenant_id),
