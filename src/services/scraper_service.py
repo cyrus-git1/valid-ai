@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -140,64 +142,109 @@ def _run_firecrawl_scraper(url: str, output_file: str = "scraped_data.json") -> 
     print(f"Firecrawl scraped {len(pages)} pages and saved to {output_path}")
 
 
+# ── Scrapy in-process runner (used by subprocess) ────────────────────────────
+
+def _run_scrapy_in_process(url: str, output_file: str) -> None:
+    """Run Scrapy spider in the current process and write results to output_file."""
+    settings = Settings()
+    settings.set("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+    process = CrawlerProcess(settings)
+
+    collected_items = []
+
+    def item_scraped(item, response, spider):
+        collected_items.append(dict(item))
+
+    dispatcher.connect(item_scraped, signal=signals.item_scraped)
+
+    process.crawl(SiteSpider, start_url=url)
+    process.start()
+
+    pages = []
+    for idx, item in enumerate(collected_items, start=1):
+        text_parts = []
+        if item.get("title"):
+            text_parts.append(f"Title: {item['title']}")
+        if item.get("url"):
+            text_parts.append(f"URL: {item['url']}")
+        if item.get("text"):
+            text_parts.append(item["text"])
+
+        full_text = "\n\n".join(text_parts)
+        if full_text.strip():
+            pages.append({
+                "page": idx,
+                "url": item.get("url", ""),
+                "title": item.get("title", ""),
+                "text": full_text,
+            })
+
+    output_data = {
+        "source_url": url,
+        "scraped_at": datetime.now().isoformat(),
+        "total_pages": len(pages),
+        "pages": pages,
+    }
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+    print(f"\nScraped {len(pages)} pages and saved to {output_file}")
+
+
+SCRAPY_TIMEOUT_SECONDS = 300  # 5 minutes
+
+
 # ── ScraperService (OOP wrapper) ─────────────────────────────────────────────
 
 class ScraperService:
-    """Unified web scraper: Scrapy first, Firecrawl fallback."""
+    """Unified web scraper: Scrapy first, Firecrawl fallback (on empty result or timeout)."""
 
     @staticmethod
     def run_spider(url: str, output_file: str = "scraped_data.json") -> None:
-        """Run SiteSpider on a URL and save results to a JSON file."""
-        settings = Settings()
-        settings.set("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        """
+        Run SiteSpider on a URL with a 5-minute timeout.
 
-        process = CrawlerProcess(settings)
+        Falls back to Firecrawl if:
+          - Scrapy times out (> 5 min)
+          - Scrapy returns zero pages
+          - Scrapy subprocess crashes
+        """
+        # Run Scrapy in a subprocess so we can enforce a wall-clock timeout.
+        # CrawlerProcess.start() blocks the event loop and has no timeout arg.
+        script = Path(__file__).resolve()
+        cmd = [sys.executable, str(script), url, output_file, "--scrapy-only"]
 
-        collected_items = []
+        print(f"Starting Scrapy scrape for {url} (timeout: {SCRAPY_TIMEOUT_SECONDS}s)")
 
-        def item_scraped(item, response, spider):
-            collected_items.append(dict(item))
+        try:
+            result = subprocess.run(
+                cmd,
+                timeout=SCRAPY_TIMEOUT_SECONDS,
+                capture_output=True,
+                text=True,
+            )
+            # Check if Scrapy produced a non-empty result
+            scrapy_ok = False
+            if result.returncode == 0 and Path(output_file).exists():
+                with open(output_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("total_pages", 0) > 0:
+                    scrapy_ok = True
+                    print(f"\nScrapy scraped {data['total_pages']} pages and saved to {output_file}")
+                    print(f"  File is ready for tokenization")
 
-        dispatcher.connect(item_scraped, signal=signals.item_scraped)
+            if not scrapy_ok:
+                print("\nNo items were scraped with Scrapy -- trying Firecrawl fallback")
+                _run_firecrawl_scraper(url, output_file)
 
-        process.crawl(SiteSpider, start_url=url)
-        process.start()
+        except subprocess.TimeoutExpired:
+            print(f"\nScrapy timed out after {SCRAPY_TIMEOUT_SECONDS}s -- falling back to Firecrawl")
+            _run_firecrawl_scraper(url, output_file)
 
-        if collected_items:
-            pages = []
-            for idx, item in enumerate(collected_items, start=1):
-                text_parts = []
-                if item.get("title"):
-                    text_parts.append(f"Title: {item['title']}")
-                if item.get("url"):
-                    text_parts.append(f"URL: {item['url']}")
-                if item.get("text"):
-                    text_parts.append(item["text"])
-
-                full_text = "\n\n".join(text_parts)
-                if full_text.strip():
-                    pages.append({
-                        "page": idx,
-                        "url": item.get("url", ""),
-                        "title": item.get("title", ""),
-                        "text": full_text,
-                    })
-
-            output_data = {
-                "source_url": url,
-                "scraped_at": datetime.now().isoformat(),
-                "total_pages": len(pages),
-                "pages": pages,
-            }
-
-            output_path = Path(output_file)
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
-
-            print(f"\nScraped {len(pages)} pages and saved to {output_path}")
-            print(f"  File is ready for tokenization")
-        else:
-            print("\nNo items were scraped with Scrapy -- trying Firecrawl fallback")
+        except Exception as e:
+            print(f"\nScrapy subprocess failed ({e}) -- falling back to Firecrawl")
             _run_firecrawl_scraper(url, output_file)
 
 
@@ -214,4 +261,9 @@ if __name__ == "__main__":
 
     target_url = sys.argv[1] if len(sys.argv) > 1 else "https://www.torontomotors.ca/"
     out_file = sys.argv[2] if len(sys.argv) > 2 else "scraped_data.json"
-    run_spider(target_url, out_file)
+
+    # --scrapy-only: run Scrapy in-process without fallback (used by subprocess timeout)
+    if "--scrapy-only" in sys.argv:
+        _run_scrapy_in_process(target_url, out_file)
+    else:
+        run_spider(target_url, out_file)
