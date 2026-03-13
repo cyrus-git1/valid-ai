@@ -3,36 +3,37 @@
 ---------------------
 Audio-to-WebVTT transcription via OpenAI Whisper.
 
-POST /transcription/generate — Upload M4A audio, get back WebVTT transcript
+POST /transcription/generate — Upload M4A audio, get back a .vtt file download
 """
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 
-from src.models.api.transcription import TranscriptionResponse
 from src.services.transcription_service import TranscriptionService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/transcription", tags=["transcription"])
 
 
-@router.post("/generate", response_model=TranscriptionResponse)
+@router.post("/generate")
 async def generate_transcription(
     audio_file: UploadFile = File(..., description="M4A audio file to transcribe"),
     tenant_id: UUID = Form(...),
     survey_id: UUID = Form(...),
     metadata: str = Form(default="{}", description="JSON-encoded metadata"),
-) -> TranscriptionResponse:
+) -> Response:
     """
     Transcribe an M4A audio file to WebVTT using OpenAI Whisper (medium model).
 
-    Accepts an audio file upload and returns the transcript in WebVTT format
-    along with the tenant_id, survey_id, and metadata passed in.
+    Accepts an audio file upload and returns the transcript as a downloadable
+    .vtt file. tenant_id, survey_id, and metadata are included in response headers.
     """
     # Validate file type
     file_name = audio_file.filename or "audio.m4a"
@@ -63,9 +64,16 @@ async def generate_transcription(
         logger.exception("Transcription failed for %s", file_name)
         raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
 
-    return TranscriptionResponse(
-        tenant_id=tenant_id,
-        survey_id=survey_id,
-        transcript=transcript_vtt,
-        metadata=meta_dict,
+    # Build .vtt filename from the original audio filename
+    vtt_filename = Path(file_name).stem + ".vtt"
+
+    return Response(
+        content=transcript_vtt,
+        media_type="text/vtt",
+        headers={
+            "Content-Disposition": f'attachment; filename="{vtt_filename}"',
+            "X-Tenant-Id": str(tenant_id),
+            "X-Survey-Id": str(survey_id),
+            "X-Metadata": json.dumps(meta_dict),
+        },
     )
