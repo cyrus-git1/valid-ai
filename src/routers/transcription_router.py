@@ -3,37 +3,39 @@
 ---------------------
 Audio-to-WebVTT transcription via OpenAI Whisper.
 
-POST /transcription/generate — Upload M4A audio, get back a .vtt file download
+POST /transcription/generate — Upload M4A audio, get back WebVTT + parsed JSON
 """
 from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any, Dict
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
 
+from src.models.api.transcription import TranscriptionResponse, TranscriptSegment
 from src.services.transcription_service import TranscriptionService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/transcription", tags=["transcription"])
 
 
-@router.post("/generate")
+@router.post("/generate", response_model=TranscriptionResponse)
 async def generate_transcription(
     audio_file: UploadFile = File(..., description="M4A audio file to transcribe"),
     tenant_id: UUID = Form(...),
     survey_id: UUID = Form(...),
     metadata: str = Form(default="{}", description="JSON-encoded metadata"),
-) -> Response:
+) -> TranscriptionResponse:
     """
     Transcribe an M4A audio file to WebVTT using OpenAI Whisper (medium model).
 
-    Accepts an audio file upload and returns the transcript as a downloadable
-    .vtt file. tenant_id, survey_id, and metadata are included in response headers.
+    Returns:
+      - tenant_id, survey_id, metadata  — echoed back
+      - vtt       — raw WebVTT string (can be saved as .vtt file)
+      - segments  — parsed JSON array of {index, start, end, text}
+      - full_text — plain-text transcript without timestamps
     """
     # Validate file type
     file_name = audio_file.filename or "audio.m4a"
@@ -56,7 +58,7 @@ async def generate_transcription(
     svc = TranscriptionService()
 
     try:
-        transcript_vtt = svc.transcribe(
+        result = svc.transcribe(
             file_bytes=file_bytes,
             file_name=file_name,
         )
@@ -64,16 +66,19 @@ async def generate_transcription(
         logger.exception("Transcription failed for %s", file_name)
         raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
 
-    # Build .vtt filename from the original audio filename
-    vtt_filename = Path(file_name).stem + ".vtt"
-
-    return Response(
-        content=transcript_vtt,
-        media_type="text/vtt",
-        headers={
-            "Content-Disposition": f'attachment; filename="{vtt_filename}"',
-            "X-Tenant-Id": str(tenant_id),
-            "X-Survey-Id": str(survey_id),
-            "X-Metadata": json.dumps(meta_dict),
-        },
+    return TranscriptionResponse(
+        tenant_id=tenant_id,
+        survey_id=survey_id,
+        vtt=result.vtt,
+        segments=[
+            TranscriptSegment(
+                index=seg.index,
+                start=seg.start,
+                end=seg.end,
+                text=seg.text,
+            )
+            for seg in result.segments
+        ],
+        full_text=result.full_text,
+        metadata=meta_dict,
     )

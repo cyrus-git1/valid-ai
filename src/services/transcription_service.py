@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import dotenv
@@ -24,6 +26,43 @@ from openai import OpenAI
 
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TranscriptSegment:
+    """A single timed segment from the transcript."""
+    index: int
+    start: str          # "00:00:01.234"
+    end: str            # "00:00:05.678"
+    text: str
+
+
+@dataclass
+class TranscriptionResult:
+    """Combined output of a Whisper transcription."""
+    vtt: str                                # raw WebVTT string
+    segments: List[TranscriptSegment]       # parsed timed segments
+    full_text: str                          # plain-text concatenation
+
+
+# Regex to parse WebVTT cues:  "00:00:01.000 --> 00:00:04.500\nSome text"
+_VTT_CUE_RE = re.compile(
+    r"(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\s*\n(.*?)(?=\n\n|\Z)",
+    re.DOTALL,
+)
+
+
+def _parse_vtt(vtt: str) -> List[TranscriptSegment]:
+    """Parse a WebVTT string into a list of TranscriptSegments."""
+    segments: List[TranscriptSegment] = []
+    for idx, match in enumerate(_VTT_CUE_RE.finditer(vtt), start=1):
+        segments.append(TranscriptSegment(
+            index=idx,
+            start=match.group(1),
+            end=match.group(2),
+            text=match.group(3).strip(),
+        ))
+    return segments
 
 
 class TranscriptionService:
@@ -41,9 +80,9 @@ class TranscriptionService:
         file_bytes: bytes,
         file_name: str,
         language: Optional[str] = None,
-    ) -> str:
+    ) -> TranscriptionResult:
         """
-        Transcribe audio bytes to WebVTT format using Whisper.
+        Transcribe audio bytes using Whisper and return VTT + parsed JSON.
 
         Parameters
         ----------
@@ -56,8 +95,8 @@ class TranscriptionService:
 
         Returns
         -------
-        str
-            The transcript in WebVTT format.
+        TranscriptionResult
+            Contains the raw VTT string, parsed segments, and full plain text.
         """
         suffix = Path(file_name).suffix or ".m4a"
 
@@ -85,7 +124,15 @@ class TranscriptionService:
                 "Transcription complete for %s — %d chars of VTT",
                 file_name, len(transcript_vtt),
             )
-            return transcript_vtt
+
+            segments = _parse_vtt(transcript_vtt)
+            full_text = " ".join(seg.text for seg in segments)
+
+            return TranscriptionResult(
+                vtt=transcript_vtt,
+                segments=segments,
+                full_text=full_text,
+            )
 
         finally:
             Path(tmp_path).unlink(missing_ok=True)
