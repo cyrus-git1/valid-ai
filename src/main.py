@@ -38,6 +38,7 @@ from src.routers.sentiment_router import router as sentiment_router
 from src.routers.transcript_insights_router import router as transcript_insights_router
 from src.routers.confidence_interval_router import router as confidence_interval_router
 from src.routers.search_router import router as search_router
+from src.routers.transcription_router import router as transcription_router
 
 app = FastAPI(
     title="Knowledge Graph RAG API",
@@ -70,6 +71,7 @@ app.include_router(sentiment_router)           # POST /sentiment-analysis/genera
 app.include_router(transcript_insights_router) # POST /transcript-insights/generate
 app.include_router(confidence_interval_router)  # POST /confidence-interval/compute
 app.include_router(search_router)                # POST /search/semantic, /search/graph, /search/ask
+app.include_router(transcription_router)         # POST /transcription/generate
 
 @app.get("/", tags=["root"])
 def root():
