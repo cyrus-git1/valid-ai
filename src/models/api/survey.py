@@ -46,11 +46,21 @@ class SurveyGenerateRequest(TenantScopedRequest):
         default=ALL_QUESTION_TYPES,
         description="Question types to generate",
     )
+    title: Optional[str] = Field(
+        default=None,
+        description="Optional survey title — used to guide question generation when provided",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Optional survey description — used to guide question generation when provided",
+    )
 
 
 class SurveyGenerateResponse(StatusResponse):
     questions: List[SurveyQuestionItem]
     context_used: int = 0
+    title: str = Field(default="", description="Generated survey title")
+    description: str = Field(default="", description="Generated survey description")
 
     model_config = {"json_schema_serialization_defaults_required": True}
 
@@ -115,6 +125,44 @@ class GenerateFollowUpResponse(StatusResponse):
     reasoning: str = Field(
         default="", description="Explanation of how follow-up questions build on the original survey"
     )
+
+
+# ── Generate survey title ───────────────────────────────────────────────────
+
+
+class GenerateTitleRequest(TenantScopedRequest):
+    request: str = Field(..., description="Survey goal / description for title generation")
+    existing_questions: Optional[List[SurveyQuestionItem]] = Field(
+        default=None,
+        description="Existing survey questions to inform title generation",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Survey description to complement when generating the title",
+    )
+
+
+class GenerateTitleResponse(StatusResponse):
+    title: str = Field(default="", description="Generated survey title")
+
+
+# ── Generate survey description ────────────────────────────────────────────
+
+
+class GenerateDescriptionRequest(TenantScopedRequest):
+    request: str = Field(..., description="Survey goal / description")
+    title: Optional[str] = Field(
+        default=None,
+        description="Survey title to complement. If omitted, description is generated from context alone.",
+    )
+    existing_questions: Optional[List[SurveyQuestionItem]] = Field(
+        default=None,
+        description="Existing survey questions to inform description generation",
+    )
+
+
+class GenerateDescriptionResponse(StatusResponse):
+    description: str = Field(default="", description="Generated survey description")
 
 
 # ── Survey output storage ────────────────────────────────────────────────────

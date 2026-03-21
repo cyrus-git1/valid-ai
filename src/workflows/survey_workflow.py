@@ -40,7 +40,9 @@ from src.prompts.survey_prompts import (
     CONTEXT_ANALYSIS_PROMPT,
     FOLLOW_UP_SURVEY_PROMPT,
     QUESTION_RECOMMENDATION_PROMPT,
+    SURVEY_DESCRIPTION_PROMPT,
     SURVEY_GENERATION_PROMPT,
+    SURVEY_TITLE_PROMPT,
     get_question_type_instructions,
 )
 from src.services.search_service import SearchService
@@ -59,6 +61,8 @@ class SurveyState(TypedDict, total=False):
     client_id: str
     client_profile: Dict[str, Any]
     question_types: List[str]
+    title: str                  # optional user-supplied title to guide generation
+    description: str            # optional user-supplied description to guide generation
 
     # Populated by nodes
     documents: List[Document]
@@ -67,8 +71,11 @@ class SurveyState(TypedDict, total=False):
     context_analysis: str       # LLM-generated insights from context + profile
     profile_section: str
     prior_questions: str        # formatted prior questions from survey_outputs
+    title_description_section: str  # formatted title/description for the prompt
     raw_output: str
     survey: str              # final JSON string output
+    generated_title: str     # LLM-generated title
+    generated_description: str  # LLM-generated description
     context_used: int
     confidence: float        # top similarity score from retrieval
     attempt: int
@@ -201,12 +208,29 @@ def build_prompt(state: SurveyState) -> SurveyState:
     except Exception as e:
         logger.warning("Failed to fetch prior survey questions: %s", e)
 
+    # Build title/description section if either was provided
+    td_parts = []
+    title = state.get("title", "")
+    description = state.get("description", "")
+    if title and title.strip():
+        td_parts.append(f"Survey title: {title.strip()}")
+    if description and description.strip():
+        td_parts.append(f"Survey description: {description.strip()}")
+    title_description_section = ""
+    if td_parts:
+        title_description_section = (
+            "\n\nThe following title and/or description have been provided for this survey. "
+            "Use them to guide the tone, scope, and focus of the questions you generate:\n"
+            + "\n".join(td_parts)
+        )
+
     return {
         **state,
         "context": context_section,
         "tenant_profile": tenant_profile,
         "profile_section": profile_section,
         "prior_questions": prior_questions_section,
+        "title_description_section": title_description_section,
         "status": "analyzing",
     }
 
@@ -272,6 +296,7 @@ def generate_survey(state: SurveyState) -> SurveyState:
             "profile_section": state.get("profile_section", ""),
             "question_type_instructions": question_type_instructions,
             "prior_questions_section": state.get("prior_questions", ""),
+            "title_description_section": state.get("title_description_section", ""),
         })
     except Exception as e:
         logger.exception("Survey generation failed")
@@ -395,7 +420,7 @@ def route_on_context_confidence(state: SurveyState) -> str:
 
 
 def route_on_validation(state: SurveyState) -> str:
-    """Route based on output validation result."""
+    """Route based on output validation result. (Legacy — kept for reference.)"""
     if state.get("status") == "parse_error":
         return "fallback_output"
     return END
@@ -573,6 +598,17 @@ def _build_profile_section(client_profile: Dict[str, Any]) -> str:
     return ""
 
 
+def _build_questions_section(questions: List[Dict[str, Any]] | None) -> str:
+    """Build a formatted questions section for title/description prompts."""
+    if not questions:
+        return ""
+    formatted = "\n".join(
+        f"- [{q.get('type', 'unknown')}] {q.get('label', '')}"
+        for q in questions
+    )
+    return f"\n\nExisting survey questions:\n{formatted}"
+
+
 def _run_context_analysis(
     request: str,
     context: str,
@@ -683,7 +719,266 @@ def _parse_recommendation_output(
     return {key: normalized, "reasoning": reasoning, "status": "complete", "error": None}
 
 
+# ── Title & description generation ────────────────────────────────────────────
+
+
+def generate_title(
+    *,
+    request: str,
+    tenant_id: str,
+    client_id: str,
+    client_profile: Dict[str, Any] | None = None,
+    existing_questions: List[Dict[str, Any]] | None = None,
+    description: str | None = None,
+) -> Dict[str, Any]:
+    """Generate a survey title based on business context.
+
+    Retrieves KG context, analyses it, then asks the LLM to produce a concise
+    survey title informed by the organization's profile and knowledge base.
+    When existing questions or a description are provided they further inform
+    the generated title.
+
+    Returns dict with keys: title (str), status (str), error (str | None).
+    """
+    # ── retrieve context ──
+    svc = SearchService(tenant_id=UUID(tenant_id), client_id=UUID(client_id))
+    docs = svc.graph_search(request, top_k=10, hop_limit=1)
+    context = ""
+    if docs:
+        context = "\n\n---\n\n".join(
+            f"[Source {i + 1}]\n{doc.page_content}"
+            for i, doc in enumerate(docs)
+            if doc.page_content.strip()
+        )
+
+    # ── build profile ──
+    profile_section = _build_profile_section(client_profile or {})
+
+    # ── analyse context ──
+    context_analysis = _run_context_analysis(
+        request=request,
+        context=context,
+        client_profile=client_profile or {},
+    )
+
+    # ── build questions section ──
+    questions_section = _build_questions_section(existing_questions)
+
+    # ── build description section ──
+    description_section = ""
+    if description and description.strip():
+        description_section = f"\n\nSurvey description: {description.strip()}"
+
+    # ── generate title ──
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+    chain = SURVEY_TITLE_PROMPT | llm | StrOutputParser()
+
+    try:
+        raw = chain.invoke({
+            "request": request,
+            "context_analysis": context_analysis,
+            "profile_section": profile_section,
+            "questions_section": questions_section,
+            "description_section": description_section,
+        })
+    except Exception as e:
+        logger.exception("Survey title generation failed")
+        return {"title": "", "status": "failed", "error": str(e)}
+
+    # Parse JSON response
+    data = _parse_simple_json(raw)
+    title = data.get("title", "").strip() if isinstance(data, dict) else ""
+
+    if not title:
+        return {"title": "", "status": "parse_error", "error": "Could not extract title from LLM output"}
+
+    return {"title": title, "status": "complete", "error": None}
+
+
+def generate_description(
+    *,
+    request: str,
+    tenant_id: str,
+    client_id: str,
+    client_profile: Dict[str, Any] | None = None,
+    title: str | None = None,
+    existing_questions: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    """Generate a survey description based on title + context, or context alone.
+
+    If a title is provided, the description complements it. If no title is
+    provided, the description is derived solely from the business context.
+    When existing questions are provided they further inform the description.
+
+    Returns dict with keys: description (str), status (str), error (str | None).
+    """
+    # ── retrieve context ──
+    svc = SearchService(tenant_id=UUID(tenant_id), client_id=UUID(client_id))
+    docs = svc.graph_search(request, top_k=10, hop_limit=1)
+    context = ""
+    if docs:
+        context = "\n\n---\n\n".join(
+            f"[Source {i + 1}]\n{doc.page_content}"
+            for i, doc in enumerate(docs)
+            if doc.page_content.strip()
+        )
+
+    # ── build profile ──
+    profile_section = _build_profile_section(client_profile or {})
+
+    # ── analyse context ──
+    context_analysis = _run_context_analysis(
+        request=request,
+        context=context,
+        client_profile=client_profile or {},
+    )
+
+    # ── build title section ──
+    title_section = ""
+    if title and title.strip():
+        title_section = f"Survey title: {title.strip()}\n\n"
+
+    # ── build questions section ──
+    questions_section = _build_questions_section(existing_questions)
+
+    # ── generate description ──
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+    chain = SURVEY_DESCRIPTION_PROMPT | llm | StrOutputParser()
+
+    try:
+        raw = chain.invoke({
+            "request": request,
+            "context_analysis": context_analysis,
+            "profile_section": profile_section,
+            "title_section": title_section,
+            "questions_section": questions_section,
+        })
+    except Exception as e:
+        logger.exception("Survey description generation failed")
+        return {"description": "", "status": "failed", "error": str(e)}
+
+    # Parse JSON response
+    data = _parse_simple_json(raw)
+    description = data.get("description", "").strip() if isinstance(data, dict) else ""
+
+    if not description:
+        return {"description": "", "status": "parse_error", "error": "Could not extract description from LLM output"}
+
+    return {"description": description, "status": "complete", "error": None}
+
+
+def generate_title_description_node(state: SurveyState) -> SurveyState:
+    """Generate title and description from the completed survey questions.
+
+    Runs after validate_output — uses the generated questions, context analysis,
+    and profile to produce a title and description for the survey.
+    """
+    survey_json = state.get("survey", "[]")
+    try:
+        questions = json.loads(survey_json)
+    except json.JSONDecodeError:
+        questions = []
+
+    request = state["request"]
+    context_analysis = state.get("context_analysis", "")
+    profile_section = state.get("profile_section", "")
+
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+
+    questions_section = _build_questions_section(questions)
+
+    # ── generate title ──
+    # If user provided a title use it; otherwise generate one
+    user_title = state.get("title", "")
+    generated_title = user_title if user_title and user_title.strip() else ""
+
+    if not generated_title:
+        description_for_title = state.get("description", "")
+        description_section = ""
+        if description_for_title and description_for_title.strip():
+            description_section = f"\n\nSurvey description: {description_for_title.strip()}"
+
+        chain_title = SURVEY_TITLE_PROMPT | llm | StrOutputParser()
+        try:
+            raw_title = chain_title.invoke({
+                "request": request,
+                "context_analysis": context_analysis,
+                "profile_section": profile_section,
+                "questions_section": questions_section,
+                "description_section": description_section,
+            })
+            data = _parse_simple_json(raw_title)
+            generated_title = data.get("title", "").strip() if isinstance(data, dict) else ""
+        except Exception as e:
+            logger.warning("Title generation in workflow failed: %s", e)
+
+    # ── generate description ──
+    user_description = state.get("description", "")
+    generated_description = user_description if user_description and user_description.strip() else ""
+
+    if not generated_description:
+        title_section = ""
+        if generated_title:
+            title_section = f"Survey title: {generated_title}\n\n"
+
+        chain_desc = SURVEY_DESCRIPTION_PROMPT | llm | StrOutputParser()
+        try:
+            raw_desc = chain_desc.invoke({
+                "request": request,
+                "context_analysis": context_analysis,
+                "profile_section": profile_section,
+                "title_section": title_section,
+                "questions_section": questions_section,
+            })
+            data = _parse_simple_json(raw_desc)
+            generated_description = data.get("description", "").strip() if isinstance(data, dict) else ""
+        except Exception as e:
+            logger.warning("Description generation in workflow failed: %s", e)
+
+    return {
+        **state,
+        "generated_title": generated_title,
+        "generated_description": generated_description,
+    }
+
+
+def _parse_simple_json(raw: str) -> Dict[str, Any]:
+    """Parse a simple JSON object from LLM output, with code-block fallback."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    return {}
+
+
 # ── Graph ────────────────────────────────────────────────────────────────────
+
+def route_on_validation_to_title(state: SurveyState) -> str:
+    """Route based on output validation — go to title/description gen or fallback."""
+    if state.get("status") == "parse_error":
+        return "fallback_output"
+    return "generate_title_description"
+
 
 def build_survey_graph():
     """Build and compile the survey generation LangGraph."""
@@ -695,6 +990,7 @@ def build_survey_graph():
     graph.add_node("analyze_context", analyze_context)
     graph.add_node("generate_survey", generate_survey)
     graph.add_node("validate_output", validate_output)
+    graph.add_node("generate_title_description", generate_title_description_node)
     graph.add_node("fallback_output", fallback_output)
 
     graph.set_entry_point("retrieve_context")
@@ -704,7 +1000,8 @@ def build_survey_graph():
     graph.add_edge("build_prompt", "analyze_context")
     graph.add_edge("analyze_context", "generate_survey")
     graph.add_edge("generate_survey", "validate_output")
-    graph.add_conditional_edges("validate_output", route_on_validation)
+    graph.add_conditional_edges("validate_output", route_on_validation_to_title)
+    graph.add_edge("generate_title_description", END)
     graph.add_edge("fallback_output", END)
 
     return graph.compile()

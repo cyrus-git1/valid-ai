@@ -15,6 +15,18 @@ from typing import Dict, List
 
 from langchain_core.prompts import ChatPromptTemplate
 
+# Re-export prompt templates used by survey_workflow
+__all__ = [
+    "ALL_QUESTION_TYPES",
+    "CONTEXT_ANALYSIS_PROMPT",
+    "FOLLOW_UP_SURVEY_PROMPT",
+    "QUESTION_RECOMMENDATION_PROMPT",
+    "SURVEY_GENERATION_PROMPT",
+    "SURVEY_TITLE_PROMPT",
+    "SURVEY_DESCRIPTION_PROMPT",
+    "get_question_type_instructions",
+]
+
 # ── Context analysis prompt (LLM-powered insight extraction) ────────────────
 
 CONTEXT_ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
@@ -230,7 +242,8 @@ SURVEY_GENERATION_PROMPT = ChatPromptTemplate.from_messages([
         "Survey request: {request}\n\n"
         "Context analysis:\n{context_analysis}\n\n"
         "Raw knowledge base context:{context_section}"
-        "{prior_questions_section}",
+        "{prior_questions_section}"
+        "{title_description_section}",
     ),
 ])
 
@@ -270,6 +283,68 @@ QUESTION_RECOMMENDATION_PROMPT = ChatPromptTemplate.from_messages([
 
 
 # ── Follow-up survey prompt ─────────────────────────────────────────────────
+
+# ── Survey title generation prompt ─────────────────────────────────────────
+
+SURVEY_TITLE_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        "You are an expert survey designer. Given business context about an "
+        "organization and a survey request, generate a concise, professional "
+        "survey title that clearly communicates the purpose of the survey.\n\n"
+        "Rules:\n"
+        "- The title should be 5-12 words\n"
+        "- It should be specific to the organization's context and goals\n"
+        "- Use clear, professional language — avoid jargon unless industry-appropriate\n"
+        "- The title should help respondents immediately understand what the survey "
+        "is about\n"
+        "- If survey questions are provided, ensure the title accurately reflects "
+        "the themes and scope of those questions\n"
+        "- If a survey description is provided, ensure the title complements it "
+        "without repeating it\n\n"
+        "Return ONLY valid JSON in this exact format:\n"
+        '{{"title": "Your Survey Title Here"}}',
+    ),
+    (
+        "human",
+        "Survey request: {request}\n\n"
+        "Context analysis:\n{context_analysis}"
+        "{profile_section}"
+        "{questions_section}"
+        "{description_section}",
+    ),
+])
+
+
+# ── Survey description generation prompt ──────────────────────────────────
+
+SURVEY_DESCRIPTION_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        "You are an expert survey designer. Generate a short, informative "
+        "description for a survey that will be shown to respondents before they "
+        "begin. The description should set expectations and encourage participation.\n\n"
+        "Rules:\n"
+        "- 1-3 sentences, no more than 50 words\n"
+        "- Explain what the survey covers and why their input matters\n"
+        "- Use a warm, professional tone\n"
+        "- If a survey title is provided, ensure the description complements it "
+        "without repeating it\n"
+        "- If survey questions are provided, ensure the description accurately "
+        "reflects the themes and scope of those questions\n\n"
+        "Return ONLY valid JSON in this exact format:\n"
+        '{{"description": "Your survey description here."}}',
+    ),
+    (
+        "human",
+        "{title_section}"
+        "Survey request: {request}\n\n"
+        "Context analysis:\n{context_analysis}"
+        "{profile_section}"
+        "{questions_section}",
+    ),
+])
+
 
 FOLLOW_UP_SURVEY_PROMPT = ChatPromptTemplate.from_messages([
     (

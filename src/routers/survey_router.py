@@ -22,10 +22,14 @@ from supabase import create_client
 
 from src.models.api.survey import (
     CardSortItem,
+    GenerateDescriptionRequest,
+    GenerateDescriptionResponse,
     GenerateFollowUpRequest,
     GenerateFollowUpResponse,
     GenerateQuestionRequest,
     GenerateQuestionResponse,
+    GenerateTitleRequest,
+    GenerateTitleResponse,
     SurveyGenerateRequest,
     SurveyGenerateResponse,
     SurveyOutputListResponse,
@@ -34,8 +38,10 @@ from src.models.api.survey import (
 )
 from src.workflows.survey_workflow import (
     build_survey_graph,
+    generate_description,
     generate_follow_up_survey,
     generate_question,
+    generate_title,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +124,8 @@ def survey_generate(req: SurveyGenerateRequest) -> SurveyGenerateResponse:
             "client_id": str(req.client_id),
             "client_profile": req.client_profile or {},
             "question_types": req.question_types,
+            "title": req.title or "",
+            "description": req.description or "",
         })
     except Exception as e:
         logger.exception("Survey generation failed")
@@ -151,6 +159,8 @@ def survey_generate(req: SurveyGenerateRequest) -> SurveyGenerateResponse:
     return SurveyGenerateResponse(
         questions=questions,
         context_used=result.get("context_used", 0),
+        title=result.get("generated_title", ""),
+        description=result.get("generated_description", ""),
         status=status,
         error=error,
     )
@@ -249,6 +259,79 @@ def survey_generate_follow_up(req: GenerateFollowUpRequest) -> GenerateFollowUpR
     return GenerateFollowUpResponse(
         questions=questions,
         reasoning=result.get("reasoning", ""),
+        status=result.get("status", "complete"),
+        error=result.get("error"),
+    )
+
+
+# ── POST /survey/generate-title ─────────────────────────────────────────────
+
+
+@router.post("/generate-title", response_model=GenerateTitleResponse)
+def survey_generate_title(req: GenerateTitleRequest) -> GenerateTitleResponse:
+    """Generate a survey title based on business context.
+
+    Uses KG context retrieval and LLM analysis to produce a concise,
+    professional survey title tailored to the organization.
+    """
+    existing_dicts = (
+        [q.model_dump(exclude_none=True) for q in req.existing_questions]
+        if req.existing_questions
+        else None
+    )
+
+    try:
+        result = generate_title(
+            request=req.request,
+            tenant_id=str(req.tenant_id),
+            client_id=str(req.client_id),
+            client_profile=req.client_profile,
+            existing_questions=existing_dicts,
+            description=req.description,
+        )
+    except Exception as e:
+        logger.exception("Survey title generation failed")
+        raise HTTPException(status_code=500, detail=f"Title generation failed: {e}")
+
+    return GenerateTitleResponse(
+        title=result.get("title", ""),
+        status=result.get("status", "complete"),
+        error=result.get("error"),
+    )
+
+
+# ── POST /survey/generate-description ─────────────────────────────────────
+
+
+@router.post("/generate-description", response_model=GenerateDescriptionResponse)
+def survey_generate_description(req: GenerateDescriptionRequest) -> GenerateDescriptionResponse:
+    """Generate a survey description based on title + context, or context alone.
+
+    If a title is provided in the request, the description complements it.
+    If no title is provided, the description is derived solely from the
+    organization's business context.
+    """
+    existing_dicts = (
+        [q.model_dump(exclude_none=True) for q in req.existing_questions]
+        if req.existing_questions
+        else None
+    )
+
+    try:
+        result = generate_description(
+            request=req.request,
+            tenant_id=str(req.tenant_id),
+            client_id=str(req.client_id),
+            client_profile=req.client_profile,
+            title=req.title,
+            existing_questions=existing_dicts,
+        )
+    except Exception as e:
+        logger.exception("Survey description generation failed")
+        raise HTTPException(status_code=500, detail=f"Description generation failed: {e}")
+
+    return GenerateDescriptionResponse(
+        description=result.get("description", ""),
         status=result.get("status", "complete"),
         error=result.get("error"),
     )
