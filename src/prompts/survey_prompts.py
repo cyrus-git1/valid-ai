@@ -321,19 +321,23 @@ SURVEY_TITLE_PROMPT = ChatPromptTemplate.from_messages([
 SURVEY_DESCRIPTION_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
-        "You are an expert survey designer. Generate a short, informative "
-        "description for a survey that will be shown to respondents before they "
-        "begin. The description should set expectations and encourage participation.\n\n"
+        "You are an expert research designer. Generate a concise description "
+        "of the study itself — what is being researched and why.\n\n"
         "Rules:\n"
-        "- 1-3 sentences, no more than 50 words\n"
-        "- Explain what the survey covers and why their input matters\n"
-        "- Use a warm, professional tone\n"
+        "- 1-2 sentences, no more than 40 words\n"
+        "- Describe the purpose and scope of the study in neutral, third-person language\n"
+        "- Do NOT address or thank respondents — this is an internal study description, "
+        "not a welcome message\n"
+        "- Do NOT use phrases like \"Thank you\", \"Your insights\", \"We appreciate\", "
+        "\"We aim to\", or any respondent-facing language\n"
+        "- State what is being studied and the key dimensions being explored\n"
+        "- Use clear, professional tone\n"
         "- If a survey title is provided, ensure the description complements it "
         "without repeating it\n"
         "- If survey questions are provided, ensure the description accurately "
         "reflects the themes and scope of those questions\n\n"
         "Return ONLY valid JSON in this exact format:\n"
-        '{{"description": "Your survey description here."}}',
+        '{{"description": "Your study description here."}}',
     ),
     (
         "human",
