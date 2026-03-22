@@ -4,7 +4,8 @@
 Survey generation, question recommendations, follow-up generation,
 and persisted survey output storage.
 
-POST /survey/generate            — Generate a full survey
+POST /survey/generate            — Generate a full survey (with KG context)
+POST /survey/generate-whole      — Generate title + description + questions from a prompt
 POST /survey/generate-question   — Recommend new questions for an in-progress survey
 POST /survey/generate-follow-up  — Generate follow-up questions from a completed survey
 GET  /survey/outputs             — List stored survey outputs for a tenant + client
@@ -30,6 +31,8 @@ from src.models.api.survey import (
     GenerateQuestionResponse,
     GenerateTitleRequest,
     GenerateTitleResponse,
+    GenerateWholeRequest,
+    GenerateWholeResponse,
     SurveyGenerateRequest,
     SurveyGenerateResponse,
     SurveyOutputListResponse,
@@ -42,6 +45,7 @@ from src.workflows.survey_workflow import (
     generate_follow_up_survey,
     generate_question,
     generate_title,
+    generate_whole_survey,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,6 +167,36 @@ def survey_generate(req: SurveyGenerateRequest) -> SurveyGenerateResponse:
         description=result.get("generated_description", ""),
         status=status,
         error=error,
+    )
+
+
+# ── POST /survey/generate-whole ──────────────────────────────────────────────
+
+
+@router.post("/generate-whole", response_model=GenerateWholeResponse)
+def survey_generate_whole(req: GenerateWholeRequest) -> GenerateWholeResponse:
+    """Generate a complete survey (title, description, questions) from a prompt.
+
+    No KG retrieval or context analysis — generates everything directly from
+    the user's free-text prompt.
+    """
+    try:
+        result = generate_whole_survey(
+            prompt=req.prompt,
+            question_types=req.question_types,
+        )
+    except Exception as e:
+        logger.exception("Whole survey generation failed")
+        raise HTTPException(status_code=500, detail=f"Whole survey generation failed: {e}")
+
+    questions = _parse_questions(result.get("questions", []))
+
+    return GenerateWholeResponse(
+        title=result.get("title", ""),
+        description=result.get("description", ""),
+        questions=questions,
+        status=result.get("status", "complete"),
+        error=result.get("error"),
     )
 
 

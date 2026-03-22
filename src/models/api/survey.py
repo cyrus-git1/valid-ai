@@ -165,6 +165,29 @@ class GenerateDescriptionResponse(StatusResponse):
     description: str = Field(default="", description="Generated survey description")
 
 
+# ── Generate whole survey (prompt-only) ──────────────────────────────────────
+
+
+class GenerateWholeRequest(BaseModel):
+    prompt: str = Field(..., description="Free-text prompt describing the survey to generate")
+    question_types: List[str] = Field(
+        default=ALL_QUESTION_TYPES,
+        description="Question types to generate",
+    )
+
+
+class GenerateWholeResponse(StatusResponse):
+    title: str = Field(default="", description="Generated survey title")
+    description: str = Field(default="", description="Generated survey description")
+    questions: List[SurveyQuestionItem] = Field(default_factory=list)
+
+    model_config = {"json_schema_serialization_defaults_required": True}
+
+    def model_dump(self, **kwargs):
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(**kwargs)
+
+
 # ── Survey output storage ────────────────────────────────────────────────────
 
 

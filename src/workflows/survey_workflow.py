@@ -954,6 +954,141 @@ def generate_title_description_node(state: SurveyState) -> SurveyState:
     }
 
 
+def generate_whole_survey(
+    *,
+    prompt: str,
+    question_types: List[str] | None = None,
+) -> Dict[str, Any]:
+    """Generate a complete survey (title, description, questions) from a prompt alone.
+
+    Skips KG retrieval and context analysis — the LLM generates everything
+    directly from the user's free-text prompt.
+
+    Returns dict with keys: title, description, questions (list), status, error.
+    """
+    question_types = question_types or ALL_QUESTION_TYPES
+    question_type_instructions = get_question_type_instructions(question_types)
+
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+
+    # ── generate questions ──
+    chain = SURVEY_GENERATION_PROMPT | llm | StrOutputParser()
+    try:
+        raw_output = chain.invoke({
+            "request": prompt,
+            "context_analysis": "",
+            "context_section": "",
+            "profile_section": "",
+            "question_type_instructions": question_type_instructions,
+            "prior_questions_section": "",
+            "title_description_section": "",
+        })
+    except Exception as e:
+        logger.exception("Whole survey generation failed")
+        return {"title": "", "description": "", "questions": [], "status": "failed", "error": str(e)}
+
+    # ── parse and normalize questions ──
+    parsed = _parse_simple_json(raw_output)
+    questions_raw = parsed if isinstance(parsed, list) else parsed.get("questions", []) if isinstance(parsed, dict) else []
+
+    if not questions_raw:
+        # Try direct JSON parse as array
+        try:
+            questions_raw = json.loads(raw_output)
+        except json.JSONDecodeError:
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_output)
+            if match:
+                try:
+                    questions_raw = json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+    if isinstance(questions_raw, dict) and "questions" in questions_raw:
+        questions_raw = questions_raw["questions"]
+
+    if not isinstance(questions_raw, list):
+        questions_raw = []
+
+    # Normalize questions
+    normalized = []
+    for q in questions_raw:
+        qtype = q.get("type", "multiple_choice")
+        base: Dict[str, Any] = {
+            "id": q.get("id") if _is_valid_uuid(q.get("id")) else str(uuid.uuid4()),
+            "type": qtype,
+            "label": q.get("label") or q.get("text", ""),
+            "required": bool(q.get("required", False)),
+        }
+        if qtype in ("multiple_choice", "checkbox"):
+            base["options"] = q.get("options", [])
+        elif qtype == "rating":
+            base["min"] = q.get("min", 1)
+            base["max"] = q.get("max", 5)
+            base["lowLabel"] = q.get("lowLabel", "Poor")
+            base["highLabel"] = q.get("highLabel", "Excellent")
+        elif qtype == "ranking":
+            base["items"] = q.get("items", [])
+        elif qtype == "card_sort":
+            items = q.get("items", [])
+            base["items"] = [
+                {"id": it.get("id") if _is_valid_uuid(it.get("id")) else str(uuid.uuid4()), "label": it.get("label", "")}
+                for it in items
+            ]
+            categories = q.get("categories", [])
+            base["categories"] = [
+                {"id": cat.get("id") if _is_valid_uuid(cat.get("id")) else str(uuid.uuid4()), "label": cat.get("label", "")}
+                for cat in categories
+            ]
+        normalized.append(base)
+
+    # ── build questions section for title/description ──
+    questions_section = _build_questions_section(normalized)
+
+    # ── generate title ──
+    title = ""
+    chain_title = SURVEY_TITLE_PROMPT | llm | StrOutputParser()
+    try:
+        raw_title = chain_title.invoke({
+            "request": prompt,
+            "context_analysis": "",
+            "profile_section": "",
+            "questions_section": questions_section,
+            "description_section": "",
+        })
+        data = _parse_simple_json(raw_title)
+        title = data.get("title", "").strip() if isinstance(data, dict) else ""
+    except Exception as e:
+        logger.warning("Title generation in generate_whole failed: %s", e)
+
+    # ── generate description ──
+    description = ""
+    chain_desc = SURVEY_DESCRIPTION_PROMPT | llm | StrOutputParser()
+    try:
+        raw_desc = chain_desc.invoke({
+            "request": prompt,
+            "context_analysis": "",
+            "profile_section": "",
+            "title_section": f"Survey title: {title}\n\n" if title else "",
+            "questions_section": questions_section,
+        })
+        data = _parse_simple_json(raw_desc)
+        description = data.get("description", "").strip() if isinstance(data, dict) else ""
+    except Exception as e:
+        logger.warning("Description generation in generate_whole failed: %s", e)
+
+    return {
+        "title": title,
+        "description": description,
+        "questions": normalized,
+        "status": "complete",
+        "error": None,
+    }
+
+
 def _parse_simple_json(raw: str) -> Dict[str, Any]:
     """Parse a simple JSON object from LLM output, with code-block fallback."""
     try:
