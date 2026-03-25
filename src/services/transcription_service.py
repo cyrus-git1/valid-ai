@@ -317,10 +317,26 @@ class TranscriptionService:
     #  Step 1: pyannote diarization + embeddings
     # ------------------------------------------------------------------ #
 
-    def _run_diarization(self, audio_path: str) -> Tuple[List[dict], dict]:
+    @staticmethod
+    def _load_audio(wav_path: str) -> dict:
+        """Load WAV file into a pyannote-compatible waveform dict."""
+        import torch
+        import soundfile as sf
+
+        data, sample_rate = sf.read(wav_path, dtype="float32")
+        # soundfile returns (samples,) for mono or (samples, channels) for stereo
+        if data.ndim == 1:
+            data = data[None, :]  # (1, samples)
+        else:
+            data = data.T  # (channels, samples)
+        waveform = torch.from_numpy(data)
+        return {"waveform": waveform, "sample_rate": sample_rate}
+
+    def _run_diarization(self, wav_path: str) -> Tuple[List[dict], dict]:
         """Run pyannote diarization on the audio file."""
         logger.info("Running pyannote speaker diarization...")
-        diarization = self._diarization_pipeline(audio_path)
+        audio = self._load_audio(wav_path)
+        diarization = self._diarization_pipeline(audio)
 
         turns: List[dict] = []
         speaker_set: set = set()
@@ -345,13 +361,15 @@ class TranscriptionService:
 
     def _extract_embeddings(
         self,
-        audio_path: str,
+        wav_path: str,
         segments: List[TranscriptSegment],
         speaker_roles: Dict[str, str],
     ) -> List[SpeakerEmbedding]:
         """Extract pyannote speaker embeddings for each transcript segment."""
         logger.info("Extracting speaker embeddings for %d segments...", len(segments))
         from pyannote.core import Segment
+
+        audio = self._load_audio(wav_path)
 
         embeddings: List[SpeakerEmbedding] = []
         for idx, seg in enumerate(segments):
@@ -364,7 +382,7 @@ class TranscriptionService:
             else:
                 try:
                     excerpt = Segment(start_sec, end_sec)
-                    emb = self._embedding_model.crop(audio_path, excerpt)
+                    emb = self._embedding_model.crop(audio, excerpt)
                     emb_vector = emb.flatten().tolist()
                 except Exception as e:
                     logger.warning("Embedding extraction failed for segment %d: %s", idx, e)
