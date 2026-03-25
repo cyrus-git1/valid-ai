@@ -298,9 +298,10 @@ class TranscriptionService:
         ).to(self._device)
 
         # pyannote speaker embedding model
+        # Inference doesn't accept token= directly; set env var for auth
+        os.environ["HF_TOKEN"] = hf_token
         self._embedding_model = PyannoteInference(
             "pyannote/embedding",
-            token=hf_token,
             device=self._device,
         )
 
