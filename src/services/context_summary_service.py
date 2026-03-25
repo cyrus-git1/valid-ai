@@ -17,6 +17,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from supabase import Client
 
+from src.config.llm import LLMConfig
 from src.services.base_service import BaseAnalysisService
 from src.services.search_service import SearchService
 
@@ -131,7 +132,7 @@ class ContextSummaryService(BaseAnalysisService):
         client_id: UUID,
         client_profile: Optional[Dict[str, Any]] = None,
         force_regenerate: bool = False,
-        llm_model: str = "gpt-4o-mini",
+        llm_model: str = LLMConfig.DEFAULT,
     ) -> Dict[str, Any]:
         """
         Generate (or regenerate) a context summary using the tenant's KG.

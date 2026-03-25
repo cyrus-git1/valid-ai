@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.config.llm import LLMConfig
 from src.models.base import TenantScoped
 
 
@@ -26,7 +27,7 @@ class AskRequest(TenantScoped):
     question: str
     top_k: int = Field(default=5, ge=1, le=20)
     hop_limit: int = Field(default=1, ge=0, le=2)
-    model: str = "gpt-4o-mini"
+    model: str = LLMConfig.DEFAULT
 
 
 class SearchResultItem(BaseModel):

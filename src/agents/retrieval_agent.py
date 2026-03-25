@@ -22,14 +22,13 @@ Usage
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
 
+from src.config.llm import LLMConfig, get_llm
 from src.prompts.retrieval_prompts import RAG_ANSWER_PROMPT
 from src.services.search_service import SearchService
 
@@ -41,7 +40,7 @@ def run_retrieval_agent(
     tenant_id: str,
     client_id: str,
     client_profile: Optional[Dict[str, Any]] = None,
-    model: str = "gpt-4o-mini",
+    model: str = LLMConfig.RAG_ANSWER,
     top_k: int = 5,
     hop_limit: int = 1,
 ) -> Dict[str, Any]:
@@ -111,11 +110,7 @@ def run_retrieval_agent(
         if parts:
             profile_section = "\n\nClient profile:\n" + "\n".join(parts)
 
-    llm = ChatOpenAI(
-        model=model,
-        temperature=0,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("rag_answer", model=model)
 
     chain = RAG_ANSWER_PROMPT | llm | StrOutputParser()
 

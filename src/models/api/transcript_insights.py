@@ -43,3 +43,51 @@ class TranscriptInsightsResponse(BaseModel):
     status: str = "complete"
     error: Optional[str] = None
     generated_at: Optional[datetime] = None
+
+
+# ── Summary sub-models ──────────────────────────────────────────────────────
+
+
+class ActionItem(BaseModel):
+    action: str = Field(description="Description of what needs to be done.")
+    owner: Optional[str] = Field(
+        default=None, description="Person responsible, or null if unspecified."
+    )
+    deadline: Optional[str] = Field(
+        default=None, description="Deadline or timeframe, or null if unspecified."
+    )
+    timestamp: Optional[str] = Field(
+        default=None, description="WebVTT timestamp (HH:MM:SS) where this was discussed."
+    )
+
+
+class Decision(BaseModel):
+    decision: str = Field(description="What was decided.")
+    timestamp: Optional[str] = Field(
+        default=None, description="WebVTT timestamp (HH:MM:SS) where it was decided."
+    )
+
+
+class TopicGroup(BaseModel):
+    topic: str = Field(description="Subject header for this discussion segment.")
+    timestamp_start: Optional[str] = Field(
+        default=None, description="WebVTT timestamp (HH:MM:SS) when topic started."
+    )
+    timestamp_end: Optional[str] = Field(
+        default=None, description="WebVTT timestamp (HH:MM:SS) when topic ended."
+    )
+    summary: str = Field(
+        description="Brief summary of what was discussed under this topic."
+    )
+
+
+class TranscriptSummaryResponse(BaseModel):
+    tenant_id: str
+    summary_type: str = Field(description="The summary type used (e.g. 'general').")
+    summary: str = Field(description="Concise summary of the entire meeting.")
+    action_items: List[ActionItem] = Field(default_factory=list)
+    decisions: List[Decision] = Field(default_factory=list)
+    topic_groups: List[TopicGroup] = Field(default_factory=list)
+    status: str = "complete"
+    error: Optional[str] = None
+    generated_at: Optional[datetime] = None

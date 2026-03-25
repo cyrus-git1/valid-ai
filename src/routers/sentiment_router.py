@@ -26,6 +26,7 @@ from src.models.api.sentiment import (
     SentimentScore,
     ThemeSentiment,
 )
+from src.config.llm import LLMConfig
 from src.services.sentiment_analysis_service import SentimentAnalysisService
 from src.supabase.supabase_client import get_supabase
 
@@ -66,7 +67,7 @@ async def generate_sentiment_analysis(
     file: UploadFile = File(..., description="WebVTT (.vtt) transcript file"),
     tenant_id: UUID = Form(...),
     survey_id: UUID = Form(...),
-    llm_model: str = Form("gpt-4o-mini"),
+    llm_model: str = Form(LLMConfig.DEFAULT),
 ) -> SentimentAnalysisResponse:
     """Generate sentiment analysis from an uploaded WebVTT file.
 

@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.config.llm import LLMConfig
 from src.models.base import TenantScoped, TenantScopedRequest
 
 
@@ -88,7 +89,7 @@ class BatchSentimentRequest(TenantScopedRequest):
     focus_queries: List[str] = Field(
         min_length=1, description="List of focus areas to analyse sentiment for (1-10)."
     )
-    llm_model: str = Field(default="gpt-4o-mini")
+    llm_model: str = Field(default=LLMConfig.DEFAULT)
     chunk_limit: int = Field(default=50)
 
 
@@ -111,7 +112,7 @@ class AllSentimentRequest(BaseModel):
         default=None, description="Optional focus area applied to every client."
     )
     client_profile: Optional[Dict[str, Any]] = Field(default=None)
-    llm_model: str = Field(default="gpt-4o-mini")
+    llm_model: str = Field(default=LLMConfig.DEFAULT)
     chunk_limit: int = Field(default=50)
 
 

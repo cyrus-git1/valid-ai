@@ -23,16 +23,17 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from supabase import Client
 
+from src.models.api.ingest import IngestInput, IngestOutput
 from src.services.chunking_service import document_bytes_to_chunks, web_scraped_json_to_chunks
 from src.services.embedding_service import embed_texts
-from src.services.kg_service import KGService, KGBuildConfig
+from src.models.domain.kg import KGBuildConfig
+from src.services.kg_service import KGService
 from src.services.context_summary_service import ContextSummaryService
 
 logger = logging.getLogger(__name__)
@@ -40,41 +41,6 @@ logger = logging.getLogger(__name__)
 JsonDict = Dict[str, Any]
 PDF_BUCKET = "pdf"
 _SUPPORTED_FILE_TYPES = {"pdf", "docx", "vtt", "xlsx", "xls"}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DTOs
-# ─────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class IngestInput:
-    tenant_id: UUID
-    client_id: UUID
-
-    # File ingest — provide both
-    file_bytes: Optional[bytes] = None
-    file_name: Optional[str] = None
-
-    # Web ingest — provide this
-    web_url: Optional[str] = None
-
-    title: Optional[str] = None
-    metadata: JsonDict = field(default_factory=dict)
-
-    embed_model: str = "text-embedding-3-small"
-    embed_batch_size: int = 64
-    prune_after_ingest: bool = False
-
-
-@dataclass
-class IngestOutput:
-    document_id: UUID
-    source_type: str
-    source_uri: str
-    chunks_upserted: int
-    chunk_ids: List[UUID]
-    warnings: List[str]
-    prune_result: Optional[JsonDict] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

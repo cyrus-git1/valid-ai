@@ -11,7 +11,6 @@ Supports three execution modes:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -19,25 +18,13 @@ from uuid import UUID
 from langchain_core.output_parsers import StrOutputParser
 from supabase import Client
 
+from src.models.domain.analysis import SentimentSharedContext as _SharedContext
 from src.prompts.sentiment_prompts import SENTIMENT_ANALYSIS_PROMPT
+from src.config.llm import LLMConfig
 from src.services.base_service import BaseAnalysisService
 from src.services.context_summary_service import ContextSummaryService
 
 logger = logging.getLogger(__name__)
-
-
-# ── Shared context (pre-fetched once per tenant+client) ──────────────────────
-
-
-@dataclass
-class _SharedContext:
-    tenant_id: UUID
-    client_id: UUID
-    transcript_count: int = 0
-    transcript_chunks: List[Dict[str, Any]] = field(default_factory=list)
-    transcript_context: str = ""
-    context_summary: str = ""
-    chunks_analysed: int = 0
 
 
 # ── Service ──────────────────────────────────────────────────────────────────
@@ -153,7 +140,7 @@ class SentimentAnalysisService(BaseAnalysisService):
         tenant_id: UUID,
         survey_id: UUID,
         vtt_content: str,
-        llm_model: str = "gpt-4o-mini",
+        llm_model: str = LLMConfig.DEFAULT,
     ) -> Dict[str, Any]:
         """Run sentiment analysis on raw WebVTT content (no DB fetch)."""
         logger.info(
@@ -201,7 +188,7 @@ class SentimentAnalysisService(BaseAnalysisService):
         client_id: UUID,
         focus_query: Optional[str] = None,
         client_profile: Optional[Dict[str, Any]] = None,
-        llm_model: str = "gpt-4o-mini",
+        llm_model: str = LLMConfig.DEFAULT,
         chunk_limit: int = 50,
     ) -> Dict[str, Any]:
         logger.info(
@@ -225,7 +212,7 @@ class SentimentAnalysisService(BaseAnalysisService):
         client_id: UUID,
         focus_queries: List[str],
         client_profile: Optional[Dict[str, Any]] = None,
-        llm_model: str = "gpt-4o-mini",
+        llm_model: str = LLMConfig.DEFAULT,
         chunk_limit: int = 50,
     ) -> Dict[str, Any]:
         logger.info(
@@ -267,7 +254,7 @@ class SentimentAnalysisService(BaseAnalysisService):
         tenant_id: UUID,
         focus_query: Optional[str] = None,
         client_profile: Optional[Dict[str, Any]] = None,
-        llm_model: str = "gpt-4o-mini",
+        llm_model: str = LLMConfig.DEFAULT,
         chunk_limit: int = 50,
     ) -> Dict[str, Any]:
         client_ids = self._list_client_ids(tenant_id)

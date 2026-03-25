@@ -17,12 +17,13 @@ Import
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import numpy as np
 from supabase import Client
+
+from src.models.domain.kg import KGBuildConfig
 
 logger = logging.getLogger(__name__)
 
@@ -51,20 +52,6 @@ def _cosine_sim_matrix(vectors: np.ndarray) -> np.ndarray:
 def _safe_preview(text: str, max_len: int = 80) -> str:
     text = (text or "").strip().replace("\n", " ")
     return text[:max_len] + ("…" if len(text) > max_len else "")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class KGBuildConfig:
-    similarity_threshold: float = 0.82
-    max_edges_per_chunk: int = 10
-    max_chunks: int = 2000
-    batch_size: int = 500
-    rel_type: str = "related_to"
-    edge_properties: Optional[JsonDict] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

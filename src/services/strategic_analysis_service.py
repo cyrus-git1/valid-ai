@@ -21,7 +21,6 @@ Import
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -29,10 +28,12 @@ from uuid import UUID
 from langchain_core.output_parsers import StrOutputParser
 from supabase import Client
 
+from src.models.domain.analysis import StrategicSharedContext as _SharedContext
 from src.prompts.strategic_analysis_prompts import (
     DEPTH_INSTRUCTIONS,
     STRATEGIC_ANALYSIS_PROMPT,
 )
+from src.config.llm import LLMConfig
 from src.services.base_service import BaseAnalysisService
 from src.services.context_summary_service import ContextSummaryService
 from src.services.search_service import SearchService
@@ -50,22 +51,6 @@ def _depth_tier(transcript_count: int) -> str:
     if transcript_count >= 1:
         return "developing"
     return "foundational"
-
-
-# ── Pre-fetched shared context ────────────────────────────────────────────────
-
-@dataclass
-class _SharedContext:
-    """Data gathered once and reused across queries for the same tenant+client."""
-
-    tenant_id: UUID
-    client_id: UUID
-    transcript_count: int = 0
-    depth: str = "foundational"
-    transcript_context: str = ""
-    context_summary: str = ""
-    transcript_chunks_retrieved: int = 0
-    context_summary_available: bool = False
 
 
 # ── Service ───────────────────────────────────────────────────────────────────
@@ -150,8 +135,11 @@ class StrategicAnalysisService(BaseAnalysisService):
             logger.warning("KG retrieval failed: %s", e)
             kg_docs = []
 
+        # Resolve document titles for KG chunks
+        doc_titles = self._resolve_document_titles(kg_docs)
+
         kg_context = "\n\n---\n\n".join(
-            f"[Chunk {i + 1}] {doc.page_content}"
+            f"[{doc_titles.get(doc.metadata.get('document_id'), f'Chunk {i + 1}')}] {doc.page_content}"
             for i, doc in enumerate(kg_docs)
             if doc.page_content.strip()
         ) or "(No knowledge base chunks available.)"
@@ -223,6 +211,39 @@ class StrategicAnalysisService(BaseAnalysisService):
             result["focus_query"] = focus_query
         return result
 
+    # ── Helpers ────────────────────────────────────────────────────────────────
+
+    def _resolve_document_titles(self, docs: list) -> Dict[str, str]:
+        """Batch-fetch document titles for a list of LangChain Documents.
+
+        Returns a mapping of document_id → title for all docs that have a
+        document_id in their metadata. Falls back gracefully if the DB
+        query fails.
+        """
+        doc_ids = list({
+            doc.metadata.get("document_id")
+            for doc in docs
+            if doc.metadata.get("document_id")
+        })
+        if not doc_ids or self.sb is None:
+            return {}
+
+        try:
+            res = (
+                self.sb.table("documents")
+                .select("id, title")
+                .in_("id", doc_ids)
+                .execute()
+            )
+            return {
+                row["id"]: row["title"]
+                for row in (res.data or [])
+                if row.get("title")
+            }
+        except Exception as e:
+            logger.warning("Failed to resolve document titles: %s", e)
+            return {}
+
     # ── Public: single ────────────────────────────────────────────────────────
 
     def generate_analysis(
@@ -234,7 +255,7 @@ class StrategicAnalysisService(BaseAnalysisService):
         top_k: int = 10,
         hop_limit: int = 1,
         web_search_queries: Optional[List[str]] = None,
-        llm_model: str = "gpt-4o-mini",
+        llm_model: str = LLMConfig.DEFAULT,
     ) -> Dict[str, Any]:
         """Run the full convergent analysis pipeline as an overall summary of all context and documents."""
         logger.info(
@@ -261,7 +282,7 @@ class StrategicAnalysisService(BaseAnalysisService):
         top_k: int = 10,
         hop_limit: int = 1,
         web_search_queries: Optional[List[str]] = None,
-        llm_model: str = "gpt-4o-mini",
+        llm_model: str = LLMConfig.DEFAULT,
     ) -> Dict[str, Any]:
         """Run an overall strategic summary across every client_id under this tenant."""
         client_ids = self._list_client_ids(tenant_id)

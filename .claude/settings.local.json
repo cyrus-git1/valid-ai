@@ -51,7 +51,17 @@
       "Bash(kill %1)",
       "Bash(xargs grep -l \"def.*web\\\\|def.*url\\\\|web_url\")",
       "Bash(python src/processing/run_scraper.py \"https://valid.site\" test_scrape_output.json)",
-      "Bash(python -m playwright install chromium)"
+      "Bash(python -m playwright install chromium)",
+      "Bash(python src/processing/run_scraper.py \"https://lunalab.ca\" test_lunalab.json)",
+      "Bash(wc -l ./src/prompts/*.py)",
+      "Bash(xargs grep:*)",
+      "Bash(find /c/Users/cyrus/Valid/src -type d -name *scrape* -o -type d -name *service*)",
+      "Bash(find C:UserscyrusValidsrc -type f -name *.py)",
+      "Bash(python test_kg_evidence.py)",
+      "Bash(git status:*)",
+      "Bash(find /c/Users/cyrus/Valid -type f \\\\\\(-name *.sql -o -name *.md \\\\\\))",
+      "Bash(find /c/Users/cyrus/Valid -name *token* -o -name *split* -o -name *preprocess*)",
+      "Bash(wc -l /c/Users/cyrus/Valid/src/prompts/*.py)"
     ]
   }
 }

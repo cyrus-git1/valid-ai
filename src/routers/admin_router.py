@@ -25,8 +25,10 @@ from src.models.api.admin import (
     ReindexResponse,
     StatsResponse,
 )
-from src.services.ingest_service import IngestService, IngestInput
-from src.services.kg_service import KGBuildConfig, KGService
+from src.models.api.ingest import IngestInput
+from src.services.ingest_service import IngestService
+from src.models.domain.kg import KGBuildConfig
+from src.services.kg_service import KGService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])

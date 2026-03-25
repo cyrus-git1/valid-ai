@@ -17,7 +17,8 @@ from uuid import UUID
 
 from supabase import Client
 
-from src.services.ingest_service import IngestService, IngestInput, IngestOutput
+from src.models.api.ingest import IngestInput, IngestOutput
+from src.services.ingest_service import IngestService
 
 logger = logging.getLogger(__name__)
 

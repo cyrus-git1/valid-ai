@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.config.llm import LLMConfig
 from src.models.base import TenantScoped, TenantScopedRequest
 
 
@@ -25,7 +26,7 @@ class AnalysisParams(BaseModel):
             "from the client profile."
         ),
     )
-    llm_model: str = Field(default="gpt-4o-mini", description="LLM to use for analysis.")
+    llm_model: str = Field(default=LLMConfig.DEFAULT, description="LLM to use for analysis.")
 
 
 class ActionPoint(BaseModel):
@@ -90,7 +91,7 @@ class StrategicAnalysisRequest(TenantScopedRequest):
             "from the client profile."
         ),
     )
-    llm_model: str = Field(default="gpt-4o-mini", description="LLM to use for analysis.")
+    llm_model: str = Field(default=LLMConfig.DEFAULT, description="LLM to use for analysis.")
 
 
 class StrategicAnalysisResponse(TenantScoped):
@@ -129,7 +130,7 @@ class AllAnalysisRequest(BaseModel):
         default_factory=list,
         description="Shared web search queries applied to every client analysis.",
     )
-    llm_model: str = Field(default="gpt-4o-mini", description="LLM to use for analysis.")
+    llm_model: str = Field(default=LLMConfig.DEFAULT, description="LLM to use for analysis.")
 
 
 class AllAnalysisResponse(BaseModel):

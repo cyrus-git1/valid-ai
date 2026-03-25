@@ -24,17 +24,17 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
+from src.config.llm import get_llm
+from src.models.workflow import SurveyState
 from src.prompts.survey_prompts import (
     ALL_QUESTION_TYPES,
     CONTEXT_ANALYSIS_PROMPT,
@@ -51,36 +51,6 @@ from src.supabase.supabase_client import get_supabase
 logger = logging.getLogger(__name__)
 
 CONFIDENCE_THRESHOLD = 0.60
-
-
-# ── State ────────────────────────────────────────────────────────────────────
-
-class SurveyState(TypedDict, total=False):
-    request: str
-    tenant_id: str
-    client_id: str
-    client_profile: Dict[str, Any]
-    question_types: List[str]
-    title: str                  # optional user-supplied title to guide generation
-    description: str            # optional user-supplied description to guide generation
-
-    # Populated by nodes
-    documents: List[Document]
-    context: str
-    tenant_profile: str         # formatted tenant profile string
-    context_analysis: str       # LLM-generated insights from context + profile
-    profile_section: str
-    prior_questions: str        # formatted prior questions from survey_outputs
-    title_description_section: str  # formatted title/description for the prompt
-    raw_output: str
-    survey: str              # final JSON string output
-    generated_title: str     # LLM-generated title
-    generated_description: str  # LLM-generated description
-    context_used: int
-    confidence: float        # top similarity score from retrieval
-    attempt: int
-    error: Optional[str]
-    status: str
 
 
 # ── Nodes ────────────────────────────────────────────────────────────────────
@@ -248,11 +218,7 @@ def analyze_context(state: SurveyState) -> SurveyState:
             "status": "generating",
         }
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("context_analysis")
 
     chain = CONTEXT_ANALYSIS_PROMPT | llm | StrOutputParser()
 
@@ -280,11 +246,7 @@ def generate_survey(state: SurveyState) -> SurveyState:
     question_types = state.get("question_types", ALL_QUESTION_TYPES)
     question_type_instructions = get_question_type_instructions(question_types)
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("survey_generation")
 
     chain = SURVEY_GENERATION_PROMPT | llm | StrOutputParser()
 
@@ -473,11 +435,7 @@ def generate_question(
     existing_text = json.dumps(existing_questions, indent=2) if existing_questions else "[]"
 
     # ── generate recommendations ──
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.4,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("question_rec")
     chain = QUESTION_RECOMMENDATION_PROMPT | llm | StrOutputParser()
 
     try:
@@ -541,11 +499,7 @@ def generate_follow_up_survey(
     completed_text = _format_completed_survey(completed_questions)
 
     # ── generate follow-up ──
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.4,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("follow_up")
     chain = FOLLOW_UP_SURVEY_PROMPT | llm | StrOutputParser()
 
     try:
@@ -624,11 +578,7 @@ def _run_context_analysis(
     if not context.strip() and tenant_profile == "No profile provided.":
         return "No context or profile available. Generate general-purpose survey questions."
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("context_analysis")
     chain = CONTEXT_ANALYSIS_PROMPT | llm | StrOutputParser()
 
     try:
@@ -770,11 +720,7 @@ def generate_title(
         description_section = f"\n\nSurvey description: {description.strip()}"
 
     # ── generate title ──
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("survey_title")
     chain = SURVEY_TITLE_PROMPT | llm | StrOutputParser()
 
     try:
@@ -846,11 +792,7 @@ def generate_description(
     questions_section = _build_questions_section(existing_questions)
 
     # ── generate description ──
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("survey_description")
     chain = SURVEY_DESCRIPTION_PROMPT | llm | StrOutputParser()
 
     try:
@@ -891,12 +833,6 @@ def generate_title_description_node(state: SurveyState) -> SurveyState:
     context_analysis = state.get("context_analysis", "")
     profile_section = state.get("profile_section", "")
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
-
     questions_section = _build_questions_section(questions)
 
     # ── generate title ──
@@ -910,7 +846,8 @@ def generate_title_description_node(state: SurveyState) -> SurveyState:
         if description_for_title and description_for_title.strip():
             description_section = f"\n\nSurvey description: {description_for_title.strip()}"
 
-        chain_title = SURVEY_TITLE_PROMPT | llm | StrOutputParser()
+        llm_title = get_llm("survey_title")
+        chain_title = SURVEY_TITLE_PROMPT | llm_title | StrOutputParser()
         try:
             raw_title = chain_title.invoke({
                 "request": request,
@@ -933,7 +870,8 @@ def generate_title_description_node(state: SurveyState) -> SurveyState:
         if generated_title:
             title_section = f"Survey title: {generated_title}\n\n"
 
-        chain_desc = SURVEY_DESCRIPTION_PROMPT | llm | StrOutputParser()
+        llm_desc = get_llm("survey_description")
+        chain_desc = SURVEY_DESCRIPTION_PROMPT | llm_desc | StrOutputParser()
         try:
             raw_desc = chain_desc.invoke({
                 "request": request,
@@ -969,14 +907,9 @@ def generate_whole_survey(
     question_types = question_types or ALL_QUESTION_TYPES
     question_type_instructions = get_question_type_instructions(question_types)
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
-
     # ── generate questions ──
-    chain = SURVEY_GENERATION_PROMPT | llm | StrOutputParser()
+    llm_gen = get_llm("survey_generation")
+    chain = SURVEY_GENERATION_PROMPT | llm_gen | StrOutputParser()
     try:
         raw_output = chain.invoke({
             "request": prompt,
@@ -1050,7 +983,8 @@ def generate_whole_survey(
 
     # ── generate title ──
     title = ""
-    chain_title = SURVEY_TITLE_PROMPT | llm | StrOutputParser()
+    llm_title = get_llm("survey_title")
+    chain_title = SURVEY_TITLE_PROMPT | llm_title | StrOutputParser()
     try:
         raw_title = chain_title.invoke({
             "request": prompt,
@@ -1066,7 +1000,8 @@ def generate_whole_survey(
 
     # ── generate description ──
     description = ""
-    chain_desc = SURVEY_DESCRIPTION_PROMPT | llm | StrOutputParser()
+    llm_desc = get_llm("survey_description")
+    chain_desc = SURVEY_DESCRIPTION_PROMPT | llm_desc | StrOutputParser()
     try:
         raw_desc = chain_desc.invoke({
             "request": prompt,

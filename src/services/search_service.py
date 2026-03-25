@@ -20,6 +20,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
+from src.config.llm import LLMConfig
 from src.services.kg_retriever_service import KGRetrieverService
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class SearchService:
         supabase_url: Optional[str] = None,
         supabase_key: Optional[str] = None,
         embed_model: str = "text-embedding-3-small",
-        llm_model: str = "gpt-4o-mini",
+        llm_model: str = LLMConfig.RAG_ANSWER,
     ):
         self.tenant_id = tenant_id
         self.client_id = client_id

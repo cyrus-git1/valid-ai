@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from src.config.llm import LLMConfig
 from src.workflows.survey_workflow import build_survey_graph
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ def run_survey_agent(
     tenant_id: str,
     client_id: str,
     client_profile: Optional[Dict[str, Any]] = None,
-    model: str = "gpt-4o-mini",
+    model: str = LLMConfig.DEFAULT,
     top_k: int = 10,
     hop_limit: int = 1,
 ) -> Dict[str, Any]:

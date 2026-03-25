@@ -18,6 +18,8 @@ from uuid import UUID
 from langchain_openai import ChatOpenAI
 from supabase import Client
 
+from src.config.llm import LLMConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +40,7 @@ class BaseAnalysisService:
     # ── LLM ───────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _create_llm(model: str = "gpt-4o-mini", temperature: float = 0.1) -> ChatOpenAI:
+    def _create_llm(model: str = LLMConfig.DEFAULT, temperature: float = 0.1) -> ChatOpenAI:
         """Create a ChatOpenAI instance with consistent defaults."""
         return ChatOpenAI(model=model, temperature=temperature)
 

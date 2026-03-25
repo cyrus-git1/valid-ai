@@ -17,8 +17,10 @@ import spacy
 import tiktoken
 from docx import Document
 
+from src.config.llm import LLMConfig
+
 # ── Config ────────────────────────────────────────────────────────────────────
-MODEL_NAME = "gpt-4o-mini"
+MODEL_NAME = LLMConfig.DEFAULT
 MAX_TOKENS = 800
 OVERLAP_TOKENS = 120
 DOCX_PARAS_PER_PAGE = 8

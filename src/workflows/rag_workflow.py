@@ -16,35 +16,19 @@ Usage
 from __future__ import annotations
 
 import logging
-import os
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
+from src.config.llm import LLMConfig, get_llm
+from src.models.workflow import RAGState
 from src.prompts.retrieval_prompts import RAG_ANSWER_PROMPT
 from src.services.kg_retriever_service import KGRetrieverService
 
 logger = logging.getLogger(__name__)
-
-
-# ── State ────────────────────────────────────────────────────────────────────
-
-class RAGState(TypedDict, total=False):
-    question: str
-    tenant_id: str
-    client_id: str
-    client_profile: Dict[str, Any]
-    documents: List[Document]
-    context: str
-    answer: str
-    confidence: float
-    top_similarity: float
-    attempt: int
-    model: str
 
 
 # ── Nodes ────────────────────────────────────────────────────────────────────
@@ -95,7 +79,7 @@ def build_context(state: RAGState) -> RAGState:
 
 def generate(state: RAGState) -> RAGState:
     """Generate answer from context using LLM."""
-    model = state.get("model", "gpt-4o-mini")
+    model = state.get("model", LLMConfig.RAG_ANSWER)
     profile_ctx = ""
     profile = state.get("client_profile", {})
     if profile:
@@ -112,11 +96,7 @@ def generate(state: RAGState) -> RAGState:
         if parts:
             profile_ctx = "\n\nClient profile:\n" + "\n".join(parts)
 
-    llm = ChatOpenAI(
-        model=model,
-        temperature=0,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("rag_answer", model=model)
 
     chain = RAG_ANSWER_PROMPT | llm | StrOutputParser()
 

@@ -29,33 +29,19 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.documents import Document
 from langgraph.graph import END, StateGraph
 
-from src.services.ingest_service import IngestInput, IngestOutput, IngestService
+from src.models.api.ingest import IngestInput, IngestOutput
+from src.models.workflow import ContextBuildState
+from src.services.ingest_service import IngestService
 from src.services.kg_retriever_service import KGRetrieverService
 from src.supabase.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
-
-
-# ── State ────────────────────────────────────────────────────────────────────
-
-class ContextBuildState(TypedDict, total=False):
-    tenant_id: str
-    client_id: str
-    docs: List[str]
-    weblinks: List[str]
-    transcripts: List[str]
-    client_profile: Dict[str, Any]
-    ingest_results: List[Dict[str, Any]]
-    documents: List[Document]
-    status: str
-    error: Optional[str]
-    warnings: List[str]
 
 
 # ── Nodes ────────────────────────────────────────────────────────────────────

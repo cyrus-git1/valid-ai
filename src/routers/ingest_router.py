@@ -34,7 +34,8 @@ from src.models.api.ingest import (
     BatchIngestStatusResponse,
     BatchItemStatus,
 )
-from src.services.ingest_service import IngestService, IngestInput
+from src.models.api.ingest import IngestInput
+from src.services.ingest_service import IngestService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])

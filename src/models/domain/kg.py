@@ -67,6 +67,16 @@ class KGEdgeEvidenceUpsert(TenantScoped):
     score: Optional[float] = None
 
 
+class KGBuildConfig(BaseModel):
+    """Configuration for the KG build pipeline."""
+    similarity_threshold: float = 0.82
+    max_edges_per_chunk: int = 10
+    max_chunks: int = 2000
+    batch_size: int = 500
+    rel_type: str = "related_to"
+    edge_properties: Optional[JsonDict] = None
+
+
 class PruneRequest(TenantScoped):
     edge_stale_days: int = 90
     node_stale_days: int = 180

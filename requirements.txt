@@ -26,6 +26,13 @@ python-multipart
 pandas
 openpyxl
 
+# Audio/Video Pipeline
+pyannote.audio
+asteroid-filterbanks
+asteroid
+torch
+torchaudio
+
 # Web Scraping
 scrapy
 trafilatura

@@ -31,13 +31,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
+from src.config.llm import get_llm
 from src.agents.retrieval_agent import run_retrieval_agent
 from src.agents.survey_agent import run_survey_agent
 from src.prompts.router_prompts import (
@@ -82,11 +81,7 @@ def classify_intent(state: RouterState) -> RouterState:
             "previous_confidence": str(state.get("intent_confidence", 0.0)),
         }
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = get_llm("router")
 
     chain = prompt | llm | StrOutputParser()
 
