@@ -84,7 +84,41 @@ def _parse_vtt(vtt: str) -> List[dict]:
             "end": match.group(2),
             "text": match.group(3).strip(),
         })
-    return segments
+    return _clean_whisper_segments(segments)
+
+
+def _clean_whisper_segments(segments: List[dict]) -> List[dict]:
+    """Remove Whisper hallucination artifacts: zero-duration and duplicate trailing segments."""
+    if not segments:
+        return segments
+
+    cleaned = []
+    seen_texts: set = set()
+
+    for seg in segments:
+        # Drop zero-duration segments
+        if seg["start"] == seg["end"]:
+            continue
+
+        # Drop segments shorter than 100ms (likely artifacts)
+        if _ts_to_ms(seg["end"]) - _ts_to_ms(seg["start"]) < 100:
+            continue
+
+        # Drop trailing duplicates (same or very similar text already seen)
+        text_norm = seg["text"].strip().lower()
+        if text_norm in seen_texts:
+            continue
+
+        seen_texts.add(text_norm)
+        cleaned.append(seg)
+
+    if len(cleaned) < len(segments):
+        logger.info(
+            "Whisper cleanup: removed %d hallucinated segments",
+            len(segments) - len(cleaned),
+        )
+
+    return cleaned
 
 
 def _overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
