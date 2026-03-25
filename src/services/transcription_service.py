@@ -22,12 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import dotenv
-import numpy as np
-import torch
 from openai import OpenAI
-from pyannote.audio import Pipeline as PyannotePipeline
-from pyannote.audio import Inference as PyannoteInference
-from asteroid.models import ConvTasNet
 
 from src.models.api.transcription import (
     CrosstalkFlag,
@@ -218,10 +213,25 @@ def _match_pyannote_to_speaker_log(
     return result
 
 
+# ---------- singleton for heavy ML models ----------
+
+_singleton_instance: Optional[TranscriptionService] = None
+
+
+def get_transcription_service() -> TranscriptionService:
+    """Return a singleton TranscriptionService (models loaded once)."""
+    global _singleton_instance
+    if _singleton_instance is None:
+        _singleton_instance = TranscriptionService()
+    return _singleton_instance
+
+
 class TranscriptionService:
     """
     Transcribe audio/video files using the pipeline:
     pyannote (diarization + embeddings) -> asteroid (crosstalk) -> whisper -> WebVTT
+
+    Models are loaded lazily on first transcription call, not at import time.
     """
 
     def __init__(self):
@@ -230,11 +240,29 @@ class TranscriptionService:
             raise RuntimeError("OPENAI_API_KEY is not set.")
         self._client = OpenAI(api_key=api_key)
 
+        # ML models are loaded lazily on first use
+        self._device = None
+        self._diarization_pipeline = None
+        self._embedding_model = None
+        self._asteroid_model = None
+        self._models_loaded = False
+
+    def _load_models(self):
+        """Lazily load pyannote + asteroid models on first call."""
+        if self._models_loaded:
+            return
+
+        import torch
+        from pyannote.audio import Pipeline as PyannotePipeline
+        from pyannote.audio import Inference as PyannoteInference
+        from asteroid.models import ConvTasNet
+
         hf_token = os.environ.get("HF_AUTH_TOKEN")
         if not hf_token:
             raise RuntimeError("HF_AUTH_TOKEN is not set (required for pyannote).")
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info("Loading ML models on device: %s", self._device)
 
         # pyannote speaker diarization pipeline
         self._diarization_pipeline = PyannotePipeline.from_pretrained(
@@ -255,6 +283,9 @@ class TranscriptionService:
         )
         self._asteroid_model.eval()
         self._asteroid_model.to(self._device)
+
+        self._models_loaded = True
+        logger.info("All ML models loaded successfully.")
 
     # ------------------------------------------------------------------ #
     #  Step 1: pyannote diarization + embeddings
@@ -353,8 +384,10 @@ class TranscriptionService:
         First identifies candidate overlap regions from diarization, then uses
         asteroid to confirm and score them.
         """
-        logger.info("Running Asteroid crosstalk detection...")
+        import torch
         import torchaudio
+
+        logger.info("Running Asteroid crosstalk detection...")
 
         # Find candidate overlap regions from diarization turns
         candidates: List[dict] = []
@@ -595,6 +628,9 @@ class TranscriptionService:
         -------
         TranscriptionResult
         """
+        # Load ML models on first call
+        self._load_models()
+
         suffix = Path(file_name).suffix or ".m4a"
         speaker_log = speaker_log or []
 

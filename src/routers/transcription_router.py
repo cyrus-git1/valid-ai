@@ -19,7 +19,7 @@ from src.models.api.transcription import (
     SpeakerLogEntry,
     TranscriptionResponse,
 )
-from src.services.transcription_service import TranscriptionService
+from src.services.transcription_service import get_transcription_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/transcription", tags=["transcription"])
@@ -68,7 +68,7 @@ async def _transcribe_file(
     speaker_log: Optional[List[SpeakerLogEntry]] = None,
 ):
     """Run the full transcription pipeline and return the result."""
-    svc = TranscriptionService()
+    svc = get_transcription_service()
     try:
         return svc.transcribe(
             file_bytes=file_bytes,
