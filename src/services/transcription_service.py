@@ -338,10 +338,30 @@ class TranscriptionService:
         audio = self._load_audio(wav_path)
         diarization = self._diarization_pipeline(audio)
 
+        logger.info("Diarization output type: %s", type(diarization).__name__)
+        logger.info("Diarization output dir: %s", [m for m in dir(diarization) if not m.startswith('_')])
+
         turns: List[dict] = []
         speaker_set: set = set()
 
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        # Handle both old (Annotation.itertracks) and new (DiarizeOutput) API
+        if hasattr(diarization, 'itertracks'):
+            track_iter = diarization.itertracks(yield_label=True)
+        elif hasattr(diarization, 'turns'):
+            # Newer pyannote returns DiarizeOutput with .turns attribute
+            track_iter = ((t.segment, None, t.speaker) for t in diarization.turns)
+        elif hasattr(diarization, '__iter__'):
+            # Try iterating directly
+            track_iter = diarization
+        else:
+            logger.error("Unknown diarization output format: %s", dir(diarization))
+            raise RuntimeError(f"Unsupported diarization output type: {type(diarization).__name__}")
+
+        for item in track_iter:
+            if len(item) == 3:
+                turn, _, speaker = item
+            else:
+                turn, speaker = item[0], item[-1]
             start_ms = int(turn.start * 1000)
             end_ms = int(turn.end * 1000)
             turns.append({
