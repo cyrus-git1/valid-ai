@@ -3,8 +3,7 @@ src/services/transcription_service.py
 --------------------------------------
 Audio/Video-to-WebVTT transcription pipeline:
 
-    pyannote (speaker diarization + embeddings)
-    -> asteroid (crosstalk/overlap detection)
+    pyannote (speaker diarization + embeddings + crosstalk detection)
     -> whisper (speech-to-text)
     -> WebVTT with speaker annotations
 
@@ -62,11 +61,6 @@ def _ms_to_ts(ms: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}.{millis:03d}"
 
 
-def _seconds_to_ts(seconds: float) -> str:
-    """Convert float seconds to 'HH:MM:SS.mmm'."""
-    return _ms_to_ts(int(seconds * 1000))
-
-
 def _parse_vtt(vtt: str) -> List[dict]:
     """Parse a WebVTT string into a list of raw dicts (start, end, text)."""
     segments = []
@@ -102,6 +96,59 @@ def _assign_speaker(
     return best_speaker
 
 
+def _detect_crosstalk_from_diarization(
+    diarization_turns: List[dict],
+) -> List[CrosstalkFlag]:
+    """
+    Detect crosstalk by finding overlapping diarization turns from different speakers.
+
+    No ML model needed — if pyannote says two different speakers are talking
+    at the same time, that's crosstalk.
+    """
+    candidates: List[dict] = []
+    for i, t1 in enumerate(diarization_turns):
+        for t2 in diarization_turns[i + 1:]:
+            if t1["speaker"] == t2["speaker"]:
+                continue
+            ov_start = max(t1["start_ms"], t2["start_ms"])
+            ov_end = min(t1["end_ms"], t2["end_ms"])
+            if ov_end > ov_start and (ov_end - ov_start) >= 200:  # min 200ms overlap
+                candidates.append({
+                    "start_ms": ov_start,
+                    "end_ms": ov_end,
+                    "speakers": sorted({t1["speaker"], t2["speaker"]}),
+                })
+
+    if not candidates:
+        return []
+
+    # Merge overlapping candidates
+    candidates.sort(key=lambda c: c["start_ms"])
+    merged: List[dict] = [candidates[0]]
+    for c in candidates[1:]:
+        prev = merged[-1]
+        if c["start_ms"] <= prev["end_ms"]:
+            prev["end_ms"] = max(prev["end_ms"], c["end_ms"])
+            prev["speakers"] = sorted(set(prev["speakers"]) | set(c["speakers"]))
+        else:
+            merged.append(c)
+
+    flags: List[CrosstalkFlag] = []
+    for region in merged:
+        overlap_ms = region["end_ms"] - region["start_ms"]
+        # Confidence based on overlap duration: longer overlap = higher confidence
+        confidence = min(1.0, overlap_ms / 2000.0)  # 2s+ overlap = 1.0
+        flags.append(CrosstalkFlag(
+            start=_ms_to_ts(region["start_ms"]),
+            end=_ms_to_ts(region["end_ms"]),
+            speakers=region["speakers"],
+            confidence=round(confidence, 4),
+        ))
+
+    logger.info("Crosstalk detection complete: %d flags from diarization overlaps", len(flags))
+    return flags
+
+
 def _match_pyannote_to_speaker_log(
     diarization_turns: List[dict],
     speaker_log: List[SpeakerLogEntry],
@@ -111,26 +158,14 @@ def _match_pyannote_to_speaker_log(
     Match pyannote labels (SPEAKER_00, SPEAKER_01, ...) to platform speaker_log
     entries by correlating timing overlaps.
 
-    Parameters
-    ----------
-    diarization_turns : list[dict]
-        Pyannote turns with "speaker", "start_ms", "end_ms".
-    speaker_log : list[SpeakerLogEntry]
-        Platform speaker turns with absolute ISO timestamps.
-    recording_start_iso : str
-        ISO 8601 timestamp of when the recording began (used to convert
-        speaker_log absolute times to relative offsets matching pyannote).
-
     Returns
     -------
     dict mapping pyannote label -> {"name": str, "role": str, "peerId": str}
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    # Parse the recording start time
     rec_start = datetime.fromisoformat(recording_start_iso.replace("Z", "+00:00"))
 
-    # Convert speaker_log entries to relative ms offsets
     log_turns: List[dict] = []
     for entry in speaker_log:
         entry_start = datetime.fromisoformat(entry.startedAt.replace("Z", "+00:00"))
@@ -145,21 +180,18 @@ def _match_pyannote_to_speaker_log(
             "end_ms": max(0, end_ms),
         })
 
-    # For each pyannote speaker, compute total overlap with each platform speaker
     pyannote_labels = sorted(set(t["speaker"] for t in diarization_turns))
 
-    # Aggregate diarization turns per pyannote label
     pyannote_by_label: Dict[str, List[dict]] = {}
     for t in diarization_turns:
         pyannote_by_label.setdefault(t["speaker"], []).append(t)
 
-    # Aggregate log turns per platform speaker name
     unique_speakers = sorted(set(lt["name"] for lt in log_turns))
     log_by_name: Dict[str, List[dict]] = {}
     for lt in log_turns:
         log_by_name.setdefault(lt["name"], []).append(lt)
 
-    # Build overlap matrix: pyannote_label x platform_speaker -> total overlap ms
+    # Build overlap matrix
     overlap_matrix: Dict[str, Dict[str, int]] = {}
     for label in pyannote_labels:
         overlap_matrix[label] = {}
@@ -170,17 +202,15 @@ def _match_pyannote_to_speaker_log(
                     total_ov += _overlap(pt["start_ms"], pt["end_ms"], lt["start_ms"], lt["end_ms"])
             overlap_matrix[label][spk_name] = total_ov
 
-    # Greedy assignment: for each pyannote label, pick the platform speaker
-    # with the highest overlap (ties broken alphabetically)
-    result: Dict[str, dict] = {}
-    assigned_speakers: set = set()
-
-    # Sort by total diarization duration (longest first) for better matching
+    # Greedy assignment: longest-duration pyannote label first
     label_durations = {
         label: sum(t["end_ms"] - t["start_ms"] for t in turns)
         for label, turns in pyannote_by_label.items()
     }
     sorted_labels = sorted(pyannote_labels, key=lambda l: label_durations.get(l, 0), reverse=True)
+
+    result: Dict[str, dict] = {}
+    assigned_speakers: set = set()
 
     for label in sorted_labels:
         best_name = None
@@ -195,7 +225,6 @@ def _match_pyannote_to_speaker_log(
 
         if best_name:
             assigned_speakers.add(best_name)
-            # Get role and peerId from the first log entry for this speaker
             first_entry = log_by_name[best_name][0]
             result[label] = {
                 "name": best_name,
@@ -229,7 +258,7 @@ def get_transcription_service() -> TranscriptionService:
 class TranscriptionService:
     """
     Transcribe audio/video files using the pipeline:
-    pyannote (diarization + embeddings) -> asteroid (crosstalk) -> whisper -> WebVTT
+    pyannote (diarization + embeddings + crosstalk) -> whisper -> WebVTT
 
     Models are loaded lazily on first transcription call, not at import time.
     """
@@ -244,25 +273,23 @@ class TranscriptionService:
         self._device = None
         self._diarization_pipeline = None
         self._embedding_model = None
-        self._asteroid_model = None
         self._models_loaded = False
 
     def _load_models(self):
-        """Lazily load pyannote + asteroid models on first call."""
+        """Lazily load pyannote models on first call."""
         if self._models_loaded:
             return
 
         import torch
         from pyannote.audio import Pipeline as PyannotePipeline
         from pyannote.audio import Inference as PyannoteInference
-        from asteroid.models import ConvTasNet
 
         hf_token = os.environ.get("HF_AUTH_TOKEN")
         if not hf_token:
             raise RuntimeError("HF_AUTH_TOKEN is not set (required for pyannote).")
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info("Loading ML models on device: %s", self._device)
+        logger.info("Loading pyannote models on device: %s", self._device)
 
         # pyannote speaker diarization pipeline
         self._diarization_pipeline = PyannotePipeline.from_pretrained(
@@ -277,31 +304,15 @@ class TranscriptionService:
             device=self._device,
         )
 
-        # asteroid ConvTasNet for source separation / overlap detection
-        self._asteroid_model = ConvTasNet.from_pretrained(
-            "mpariente/ConvTasNet_WHAM!_sepclean"
-        )
-        self._asteroid_model.eval()
-        self._asteroid_model.to(self._device)
-
         self._models_loaded = True
-        logger.info("All ML models loaded successfully.")
+        logger.info("Pyannote models loaded successfully.")
 
     # ------------------------------------------------------------------ #
     #  Step 1: pyannote diarization + embeddings
     # ------------------------------------------------------------------ #
 
     def _run_diarization(self, audio_path: str) -> Tuple[List[dict], dict]:
-        """
-        Run pyannote diarization on the audio file.
-
-        Returns
-        -------
-        turns : list[dict]
-            Each dict has: speaker, start_ms, end_ms, start_ts, end_ts
-        speaker_map : dict
-            Mapping from pyannote label (SPEAKER_00) to itself (caller can remap later)
-        """
+        """Run pyannote diarization on the audio file."""
         logger.info("Running pyannote speaker diarization...")
         diarization = self._diarization_pipeline(audio_path)
 
@@ -343,7 +354,6 @@ class TranscriptionService:
             duration = end_sec - start_sec
 
             if duration < 0.1:
-                # Too short for a meaningful embedding
                 emb_vector = []
             else:
                 try:
@@ -370,116 +380,7 @@ class TranscriptionService:
         return embeddings
 
     # ------------------------------------------------------------------ #
-    #  Step 2: asteroid crosstalk detection
-    # ------------------------------------------------------------------ #
-
-    def _detect_crosstalk(
-        self,
-        audio_path: str,
-        diarization_turns: List[dict],
-    ) -> List[CrosstalkFlag]:
-        """
-        Use Asteroid source separation to flag regions with overlapping speech.
-
-        First identifies candidate overlap regions from diarization, then uses
-        asteroid to confirm and score them.
-        """
-        import torch
-        import torchaudio
-
-        logger.info("Running Asteroid crosstalk detection...")
-
-        # Find candidate overlap regions from diarization turns
-        candidates: List[dict] = []
-        for i, t1 in enumerate(diarization_turns):
-            for t2 in diarization_turns[i + 1:]:
-                if t1["speaker"] == t2["speaker"]:
-                    continue
-                ov_start = max(t1["start_ms"], t2["start_ms"])
-                ov_end = min(t1["end_ms"], t2["end_ms"])
-                if ov_end > ov_start and (ov_end - ov_start) >= 200:  # min 200ms overlap
-                    candidates.append({
-                        "start_ms": ov_start,
-                        "end_ms": ov_end,
-                        "speakers": sorted({t1["speaker"], t2["speaker"]}),
-                    })
-
-        if not candidates:
-            logger.info("No crosstalk candidates found from diarization.")
-            return []
-
-        # Merge overlapping candidates
-        candidates.sort(key=lambda c: c["start_ms"])
-        merged: List[dict] = [candidates[0]]
-        for c in candidates[1:]:
-            prev = merged[-1]
-            if c["start_ms"] <= prev["end_ms"]:
-                prev["end_ms"] = max(prev["end_ms"], c["end_ms"])
-                prev["speakers"] = sorted(set(prev["speakers"]) | set(c["speakers"]))
-            else:
-                merged.append(c)
-
-        # Load audio for asteroid analysis
-        waveform, sample_rate = torchaudio.load(audio_path)
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-
-        # Resample to 8kHz if needed (asteroid model expects 8kHz)
-        if sample_rate != 8000:
-            resampler = torchaudio.transforms.Resample(sample_rate, 8000)
-            waveform = resampler(waveform)
-            sample_rate = 8000
-
-        flags: List[CrosstalkFlag] = []
-        for region in merged:
-            start_sample = int(region["start_ms"] * sample_rate / 1000)
-            end_sample = int(region["end_ms"] * sample_rate / 1000)
-            end_sample = min(end_sample, waveform.shape[-1])
-
-            if end_sample <= start_sample:
-                continue
-
-            chunk = waveform[:, start_sample:end_sample]
-            if chunk.shape[-1] < sample_rate * 0.1:  # less than 100ms
-                continue
-
-            try:
-                with torch.no_grad():
-                    separated = self._asteroid_model(chunk.unsqueeze(0).to(self._device))
-
-                # Score: if both separated sources have significant energy,
-                # it confirms overlapping speech
-                source_energies = []
-                for src_idx in range(separated.shape[1]):
-                    energy = separated[0, src_idx].pow(2).mean().item()
-                    source_energies.append(energy)
-
-                if len(source_energies) >= 2:
-                    sorted_energies = sorted(source_energies, reverse=True)
-                    # Ratio of 2nd strongest to strongest source
-                    if sorted_energies[0] > 1e-10:
-                        ratio = sorted_energies[1] / sorted_energies[0]
-                        confidence = min(1.0, ratio * 2)  # scale to 0-1
-                    else:
-                        confidence = 0.0
-                else:
-                    confidence = 0.0
-
-                if confidence > 0.3:  # threshold for flagging
-                    flags.append(CrosstalkFlag(
-                        start=_ms_to_ts(region["start_ms"]),
-                        end=_ms_to_ts(region["end_ms"]),
-                        speakers=region["speakers"],
-                        confidence=round(confidence, 4),
-                    ))
-            except Exception as e:
-                logger.warning("Asteroid analysis failed for region %s: %s", region, e)
-
-        logger.info("Crosstalk detection complete: %d flags", len(flags))
-        return flags
-
-    # ------------------------------------------------------------------ #
-    #  Step 3: whisper transcription
+    #  Step 2: whisper transcription
     # ------------------------------------------------------------------ #
 
     def _run_whisper(
@@ -502,7 +403,7 @@ class TranscriptionService:
         return vtt
 
     # ------------------------------------------------------------------ #
-    #  Step 4: merge diarization with whisper segments -> annotated WebVTT
+    #  Step 3: merge diarization with whisper segments -> annotated WebVTT
     # ------------------------------------------------------------------ #
 
     def _merge_and_build(
@@ -511,16 +412,7 @@ class TranscriptionService:
         diarization_turns: List[dict],
         crosstalk_flags: List[CrosstalkFlag],
     ) -> Tuple[List[TranscriptSegment], str]:
-        """
-        Merge whisper segments with diarization labels and crosstalk flags.
-
-        Returns
-        -------
-        segments : list[TranscriptSegment]
-        vtt : str
-            Speaker-annotated WebVTT string
-        """
-        # Build a lookup of crosstalk regions for fast checking
+        """Merge whisper segments with diarization labels and crosstalk flags."""
         ct_regions = [
             (_ts_to_ms(f.start), _ts_to_ms(f.end))
             for f in crosstalk_flags
@@ -535,7 +427,6 @@ class TranscriptionService:
 
             speaker = _assign_speaker(seg_start_ms, seg_end_ms, diarization_turns)
 
-            # Check if this segment overlaps with any crosstalk region
             is_crosstalk = any(
                 _overlap(seg_start_ms, seg_end_ms, ct_start, ct_end) > 0
                 for ct_start, ct_end in ct_regions
@@ -550,7 +441,6 @@ class TranscriptionService:
                 crosstalk=is_crosstalk,
             ))
 
-            # Build annotated VTT cue
             vtt_lines.append(str(idx))
             vtt_lines.append(f"{raw['start']} --> {raw['end']}")
             prefix = f"<v {speaker}>" if speaker else ""
@@ -609,26 +499,10 @@ class TranscriptionService:
         speaker_log: Optional[List[SpeakerLogEntry]] = None,
     ) -> TranscriptionResult:
         """
-        Full transcription pipeline: pyannote -> asteroid -> whisper -> WebVTT.
+        Full transcription pipeline: pyannote -> whisper -> WebVTT.
 
-        Parameters
-        ----------
-        file_bytes : bytes
-            Raw audio/video file content.
-        file_name : str
-            Original filename (used for temp file extension).
-        language : str, optional
-            ISO-639-1 language hint for Whisper.
-        speaker_log : list[SpeakerLogEntry], optional
-            Platform speaker log with names, roles, peerIds, and absolute
-            timestamps. Used to map pyannote diarization labels to real
-            participant identities via timing correlation.
-
-        Returns
-        -------
-        TranscriptionResult
+        Crosstalk is detected from pyannote diarization overlaps (no asteroid).
         """
-        # Load ML models on first call
         self._load_models()
 
         suffix = Path(file_name).suffix or ".m4a"
@@ -652,13 +526,11 @@ class TranscriptionService:
             effective_peer_ids: Dict[str, str] = {}
 
             if speaker_log:
-                # Use the earliest speaker_log entry as recording start reference
                 recording_start = min(e.startedAt for e in speaker_log)
                 speaker_mapping = _match_pyannote_to_speaker_log(
                     diarization_turns, speaker_log, recording_start,
                 )
 
-                # Remap diarization turns to use real names
                 for turn in diarization_turns:
                     raw_label = turn["speaker"]
                     if raw_label in speaker_mapping:
@@ -668,14 +540,14 @@ class TranscriptionService:
                         if mapped["peerId"]:
                             effective_peer_ids[mapped["name"]] = mapped["peerId"]
 
-            # Step 2: asteroid crosstalk detection
-            crosstalk_flags = self._detect_crosstalk(tmp_path, diarization_turns)
+            # Detect crosstalk from diarization overlaps
+            crosstalk_flags = _detect_crosstalk_from_diarization(diarization_turns)
 
-            # Step 3: whisper transcription
+            # Step 2: whisper transcription
             raw_vtt = self._run_whisper(tmp_path, language=language)
             raw_segments = _parse_vtt(raw_vtt)
 
-            # Step 4: merge diarization + crosstalk flags with whisper segments
+            # Step 3: merge diarization + crosstalk flags with whisper segments
             segments, annotated_vtt = self._merge_and_build(
                 raw_segments, diarization_turns, crosstalk_flags,
             )

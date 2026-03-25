@@ -28,8 +28,6 @@ openpyxl
 
 # Audio/Video Pipeline
 pyannote.audio
-asteroid-filterbanks
-asteroid
 
 # Web Scraping
 scrapy
