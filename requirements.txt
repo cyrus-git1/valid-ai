@@ -30,8 +30,6 @@ openpyxl
 pyannote.audio
 asteroid-filterbanks
 asteroid
-torch
-torchaudio
 
 # Web Scraping
 scrapy
