@@ -75,23 +75,6 @@ app.include_router(search_router)                # POST /search/semantic, /searc
 app.include_router(transcription_router)         # POST /transcription/generate
 app.include_router(panel_participant_router)      # POST /panel/ingest, /panel/filter
 
-@app.on_event("startup")
-async def _preload_transcription_models():
-    """Download and load pyannote models at startup (in a background thread)."""
-    import threading
-
-    def _load():
-        try:
-            from src.services.transcription_service import get_transcription_service
-            svc = get_transcription_service()
-            svc._load_models()
-            logger.info("Pyannote models preloaded successfully.")
-        except Exception as e:
-            logger.warning("Pyannote model preload failed (will retry on first request): %s", e)
-
-    threading.Thread(target=_load, daemon=True).start()
-
-
 @app.get("/", tags=["root"])
 def root():
     return {
