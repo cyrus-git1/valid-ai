@@ -3,8 +3,10 @@ src/services/transcription_service.py
 --------------------------------------
 Audio/Video-to-WebVTT transcription pipeline:
 
-    whisper (speech-to-text via OpenAI API)
-    -> GPT-4o-mini (match speaker_log to VTT segments)
+    pyannote API (speaker diarization)
+    + whisper (speech-to-text via OpenAI API)
+    -> merge diarization with VTT segments
+    -> speaker_log name mapping
     -> speaker-annotated WebVTT
 
 Import
@@ -13,16 +15,17 @@ Import
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import dotenv
+import httpx
 from openai import OpenAI
 
 from src.models.api.transcription import (
@@ -42,6 +45,10 @@ _VTT_CUE_RE = re.compile(
     r"(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\s*\n(.*?)(?=\n\n|\Z)",
     re.DOTALL,
 )
+
+_PYANNOTE_API_BASE = "https://api.pyannote.ai/v1"
+_PYANNOTE_POLL_INTERVAL = 5  # seconds between status checks
+_PYANNOTE_MAX_WAIT = 600  # max seconds to wait for a job
 
 # ---------- timestamp helpers ----------
 
@@ -63,6 +70,11 @@ def _ms_to_ts(ms: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}.{millis:03d}"
 
 
+def _sec_to_ts(sec: float) -> str:
+    """Convert seconds (float) to 'HH:MM:SS.mmm'."""
+    return _ms_to_ts(int(sec * 1000))
+
+
 def _parse_vtt(vtt: str) -> List[dict]:
     """Parse a WebVTT string into a list of raw dicts (start, end, text)."""
     segments = []
@@ -80,7 +92,137 @@ def _overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
     return max(0, min(a_end, b_end) - max(a_start, b_start))
 
 
-# ---------- crosstalk detection from speaker_log ----------
+# ---------- pyannote label -> real name mapping ----------
+
+def _map_pyannote_labels_to_names(
+    diarization: List[dict],
+    speaker_log: List[SpeakerLogEntry],
+) -> Dict[str, str]:
+    """
+    Map pyannote labels (SPEAKER_00, SPEAKER_01, ...) to real names from speaker_log
+    by computing timing overlap between pyannote segments and speaker_log turns.
+
+    Returns a dict: pyannote_label -> real_name.
+    """
+    if not speaker_log or not diarization:
+        return {}
+
+    rec_start = datetime.fromisoformat(
+        min(e.startedAt for e in speaker_log).replace("Z", "+00:00")
+    )
+
+    # Build speaker_log turns in seconds (relative to recording start)
+    log_turns: List[dict] = []
+    for entry in speaker_log:
+        entry_start = datetime.fromisoformat(entry.startedAt.replace("Z", "+00:00"))
+        entry_end = datetime.fromisoformat(entry.endedAt.replace("Z", "+00:00"))
+        start_sec = max(0.0, (entry_start - rec_start).total_seconds())
+        end_sec = max(0.0, (entry_end - rec_start).total_seconds())
+        log_turns.append({
+            "name": entry.name,
+            "start": start_sec,
+            "end": end_sec,
+        })
+
+    # Get unique pyannote labels
+    pyannote_labels = sorted(set(seg["speaker"] for seg in diarization))
+    real_names = sorted(set(entry.name for entry in speaker_log))
+
+    # Build overlap matrix: pyannote_label x real_name -> total overlap seconds
+    overlap_matrix: Dict[str, Dict[str, float]] = {
+        label: {name: 0.0 for name in real_names} for label in pyannote_labels
+    }
+
+    for seg in diarization:
+        label = seg["speaker"]
+        seg_start = seg["start"]
+        seg_end = seg["end"]
+        for turn in log_turns:
+            ov = max(0.0, min(seg_end, turn["end"]) - max(seg_start, turn["start"]))
+            if ov > 0:
+                overlap_matrix[label][turn["name"]] += ov
+
+    # Greedy assignment: for each pyannote label, pick the real name with most overlap
+    # (avoiding duplicate assignments where possible)
+    label_to_name: Dict[str, str] = {}
+    assigned_names: set = set()
+
+    # Sort labels by their total speech time (most speech first) for better matching
+    label_total = {
+        label: sum(overlap_matrix[label].values()) for label in pyannote_labels
+    }
+    sorted_labels = sorted(pyannote_labels, key=lambda l: label_total[l], reverse=True)
+
+    for label in sorted_labels:
+        best_name = None
+        best_overlap = 0.0
+        for name in real_names:
+            ov = overlap_matrix[label][name]
+            if ov > best_overlap:
+                # Prefer unassigned names, but allow duplicates as fallback
+                if name not in assigned_names or ov > best_overlap * 1.5:
+                    best_name = name
+                    best_overlap = ov
+        if best_name:
+            label_to_name[label] = best_name
+            assigned_names.add(best_name)
+        else:
+            label_to_name[label] = label  # keep pyannote label as fallback
+
+    logger.info("Label mapping: %s", label_to_name)
+    return label_to_name
+
+
+# ---------- crosstalk detection from diarization ----------
+
+def _detect_crosstalk_from_diarization(
+    diarization: List[dict],
+) -> List[CrosstalkFlag]:
+    """Detect crosstalk from overlapping diarization segments (>=200ms)."""
+    candidates: List[dict] = []
+    for i, s1 in enumerate(diarization):
+        for s2 in diarization[i + 1:]:
+            if s1["speaker"] == s2["speaker"]:
+                continue
+            ov_start = max(s1["start"], s2["start"])
+            ov_end = min(s1["end"], s2["end"])
+            ov_ms = int((ov_end - ov_start) * 1000)
+            if ov_ms >= 200:
+                candidates.append({
+                    "start_ms": int(ov_start * 1000),
+                    "end_ms": int(ov_end * 1000),
+                    "speakers": sorted({s1["speaker"], s2["speaker"]}),
+                })
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda c: c["start_ms"])
+    merged: List[dict] = [candidates[0]]
+    for c in candidates[1:]:
+        prev = merged[-1]
+        if c["start_ms"] <= prev["end_ms"]:
+            prev["end_ms"] = max(prev["end_ms"], c["end_ms"])
+            prev["speakers"] = sorted(set(prev["speakers"]) | set(c["speakers"]))
+        else:
+            merged.append(c)
+
+    flags: List[CrosstalkFlag] = []
+    for region in merged:
+        overlap_ms = region["end_ms"] - region["start_ms"]
+        confidence = min(1.0, overlap_ms / 2000.0)
+        flags.append(CrosstalkFlag(
+            start=_ms_to_ts(region["start_ms"]),
+            end=_ms_to_ts(region["end_ms"]),
+            speakers=region["speakers"],
+            confidence=round(confidence, 4),
+        ))
+
+    logger.info("Crosstalk detection: %d flags from diarization overlaps", len(flags))
+    return flags
+
+
+# ---------- speaker_log fallback ----------
 
 def _speaker_log_to_turns(
     speaker_log: List[SpeakerLogEntry],
@@ -113,7 +255,7 @@ def _speaker_log_to_turns(
     return turns, roles, peer_ids
 
 
-def _detect_crosstalk(speaker_turns: List[dict]) -> List[CrosstalkFlag]:
+def _detect_crosstalk_from_speaker_log(speaker_turns: List[dict]) -> List[CrosstalkFlag]:
     """Detect crosstalk from overlapping speaker_log turns (>=200ms)."""
     candidates: List[dict] = []
     for i, t1 in enumerate(speaker_turns):
@@ -170,35 +312,12 @@ def get_transcription_service() -> TranscriptionService:
     return _singleton_instance
 
 
-_SPEAKER_MATCH_PROMPT = """\
-You are a speaker attribution engine. You receive two inputs:
-
-1. A WebVTT transcript with numbered segments (index, start time, end time, text).
-2. A speaker_log from a video call platform showing who was speaking at what times.
-
-Your job: assign the correct speaker name from the speaker_log to each VTT segment \
-based on timing overlap and conversational context.
-
-Rules:
-- Each segment gets exactly one speaker.
-- Use the speaker_log timing as the primary signal. The speaker whose talk turn \
-overlaps the most with a VTT segment's time range is usually the correct speaker.
-- Use conversational context (questions vs answers, topic continuity) as a secondary \
-signal when timing is ambiguous.
-- If a segment has no clear speaker match, assign the most likely speaker based on context.
-
-Return ONLY a JSON array where each element is:
-{"index": <segment index>, "speaker": "<speaker name from speaker_log>"}
-
-No explanation, no markdown, just the JSON array."""
-
-
 class TranscriptionService:
     """
     Transcribe audio/video files using:
-    whisper (OpenAI API) -> GPT-4o-mini (speaker matching) -> annotated WebVTT
+    pyannote API (diarization) + whisper (OpenAI API) -> annotated WebVTT
 
-    No local ML models required.
+    Speaker_log from the platform is used to map pyannote labels to real names.
     """
 
     def __init__(self):
@@ -206,6 +325,102 @@ class TranscriptionService:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set.")
         self._client = OpenAI(api_key=api_key)
+
+        self._pyannote_key = os.environ.get("PYANNOTE_API_KEY")
+        if not self._pyannote_key:
+            logger.warning("PYANNOTE_API_KEY is not set — diarization will fall back to speaker_log only.")
+
+    # ---------- pyannote API ----------
+
+    def _pyannote_upload(self, file_bytes: bytes, file_name: str) -> str:
+        """Upload audio to pyannote and return the media:// URL."""
+        media_url = f"media://valid/{file_name}"
+
+        with httpx.Client(timeout=60) as client:
+            # Step 1: Get presigned upload URL
+            resp = client.post(
+                f"{_PYANNOTE_API_BASE}/media/input",
+                headers={
+                    "Authorization": f"Bearer {self._pyannote_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"url": media_url},
+            )
+            resp.raise_for_status()
+            presigned_url = resp.json()["url"]
+
+            # Step 2: PUT the file
+            resp = client.put(
+                presigned_url,
+                content=file_bytes,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            resp.raise_for_status()
+
+        logger.info("Uploaded %s to pyannote (%d bytes)", media_url, len(file_bytes))
+        return media_url
+
+    def _pyannote_diarize(self, media_url: str, num_speakers: Optional[int] = None) -> str:
+        """Submit a diarization job and return the jobId."""
+        body: Dict[str, Any] = {"url": media_url}
+        if num_speakers:
+            body["numSpeakers"] = num_speakers
+
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(
+                f"{_PYANNOTE_API_BASE}/diarize",
+                headers={
+                    "Authorization": f"Bearer {self._pyannote_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        job_id = data["jobId"]
+        logger.info("Diarization job submitted: %s", job_id)
+        return job_id
+
+    def _pyannote_poll(self, job_id: str) -> List[dict]:
+        """Poll a pyannote job until completion and return diarization segments."""
+        elapsed = 0
+        with httpx.Client(timeout=30) as client:
+            while elapsed < _PYANNOTE_MAX_WAIT:
+                resp = client.get(
+                    f"{_PYANNOTE_API_BASE}/jobs/{job_id}",
+                    headers={"Authorization": f"Bearer {self._pyannote_key}"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                status = data["status"]
+
+                if status == "succeeded":
+                    diarization = data.get("output", {}).get("diarization", [])
+                    logger.info(
+                        "Diarization complete: %d segments from pyannote",
+                        len(diarization),
+                    )
+                    return diarization
+
+                if status in ("failed", "canceled"):
+                    raise RuntimeError(f"Pyannote diarization job {status}: {data}")
+
+                logger.debug("Diarization job %s status: %s (waited %ds)", job_id, status, elapsed)
+                time.sleep(_PYANNOTE_POLL_INTERVAL)
+                elapsed += _PYANNOTE_POLL_INTERVAL
+
+        raise RuntimeError(f"Pyannote diarization timed out after {_PYANNOTE_MAX_WAIT}s")
+
+    def _run_diarization(
+        self, file_bytes: bytes, file_name: str, num_speakers: Optional[int] = None
+    ) -> List[dict]:
+        """Upload audio and run pyannote diarization. Returns list of {speaker, start, end}."""
+        media_url = self._pyannote_upload(file_bytes, file_name)
+        job_id = self._pyannote_diarize(media_url, num_speakers=num_speakers)
+        return self._pyannote_poll(job_id)
+
+    # ---------- whisper ----------
 
     def _run_whisper(
         self,
@@ -226,67 +441,44 @@ class TranscriptionService:
         logger.info("Whisper transcription complete — %d chars of VTT", len(vtt))
         return vtt
 
-    def _match_speakers_with_llm(
+    # ---------- merge diarization + VTT ----------
+
+    def _assign_speakers_from_diarization(
         self,
         raw_segments: List[dict],
-        speaker_log: List[SpeakerLogEntry],
+        diarization: List[dict],
+        label_to_name: Dict[str, str],
     ) -> Dict[int, str]:
         """
-        Use GPT-4o-mini to match VTT segments to speakers from the speaker_log.
+        Assign speakers to VTT segments based on pyannote diarization timing overlap.
 
-        Returns a dict mapping segment index (1-based) to speaker name.
+        For each VTT segment, finds the diarization turn with the most overlap
+        and assigns that speaker (mapped to real name via label_to_name).
+
+        Returns dict: segment index (1-based) -> speaker name.
         """
-        # Build the VTT summary for the prompt
-        vtt_lines = []
+        speaker_map: Dict[int, str] = {}
+
         for idx, seg in enumerate(raw_segments, start=1):
-            vtt_lines.append(f"[{idx}] {seg['start']} --> {seg['end']}: {seg['text']}")
-        vtt_text = "\n".join(vtt_lines)
+            seg_start = _ts_to_ms(seg["start"]) / 1000.0
+            seg_end = _ts_to_ms(seg["end"]) / 1000.0
 
-        # Build the speaker_log summary
-        rec_start = datetime.fromisoformat(
-            min(e.startedAt for e in speaker_log).replace("Z", "+00:00")
-        )
-        log_lines = []
-        for entry in speaker_log:
-            entry_start = datetime.fromisoformat(entry.startedAt.replace("Z", "+00:00"))
-            entry_end = datetime.fromisoformat(entry.endedAt.replace("Z", "+00:00"))
-            start_sec = (entry_start - rec_start).total_seconds()
-            end_sec = (entry_end - rec_start).total_seconds()
-            start_ts = _ms_to_ts(int(start_sec * 1000))
-            end_ts = _ms_to_ts(int(end_sec * 1000))
-            log_lines.append(f"{entry.name} ({entry.role}): {start_ts} --> {end_ts}")
-        log_text = "\n".join(log_lines)
+            best_label = None
+            best_overlap = 0.0
 
-        user_msg = f"## WebVTT Segments\n{vtt_text}\n\n## Speaker Log\n{log_text}"
+            for d_seg in diarization:
+                ov = max(0.0, min(seg_end, d_seg["end"]) - max(seg_start, d_seg["start"]))
+                if ov > best_overlap:
+                    best_overlap = ov
+                    best_label = d_seg["speaker"]
 
-        logger.info("Matching speakers with GPT-4o-mini...")
-        response = self._client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _SPEAKER_MATCH_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0,
-        )
+            if best_label:
+                speaker_map[idx] = label_to_name.get(best_label, best_label)
 
-        result_text = response.choices[0].message.content.strip()
-        # Strip markdown code fences if present
-        if result_text.startswith("```"):
-            result_text = re.sub(r"^```\w*\n?", "", result_text)
-            result_text = re.sub(r"\n?```$", "", result_text)
+        logger.info("Speaker assignment: %d/%d segments matched", len(speaker_map), len(raw_segments))
+        return speaker_map
 
-        try:
-            assignments = json.loads(result_text)
-        except json.JSONDecodeError:
-            logger.error("Failed to parse speaker assignments: %s", result_text)
-            return {}
-
-        mapping: Dict[int, str] = {}
-        for item in assignments:
-            mapping[item["index"]] = item["speaker"]
-
-        logger.info("Speaker matching complete: %d segments assigned", len(mapping))
-        return mapping
+    # ---------- build output ----------
 
     def _build_annotated_output(
         self,
@@ -364,6 +556,8 @@ class TranscriptionService:
             )
         return result
 
+    # ---------- main pipeline ----------
+
     def transcribe(
         self,
         *,
@@ -373,7 +567,12 @@ class TranscriptionService:
         speaker_log: Optional[List[SpeakerLogEntry]] = None,
     ) -> TranscriptionResult:
         """
-        Transcription pipeline: whisper -> GPT-4o-mini speaker matching -> WebVTT.
+        Transcription pipeline:
+        1. pyannote API (diarization — who spoke when)
+        2. Whisper API (speech-to-text -> VTT)
+        3. Merge diarization with VTT segments
+        4. Map pyannote labels to real names via speaker_log
+        5. Detect crosstalk from diarization overlaps
         """
         suffix = Path(file_name).suffix or ".m4a"
         speaker_log = speaker_log or []
@@ -392,31 +591,52 @@ class TranscriptionService:
             raw_vtt = self._run_whisper(tmp_path, language=language)
             raw_segments = _parse_vtt(raw_vtt)
 
-            # Step 2: Speaker matching via GPT-4o-mini
+            # Step 2: Diarization + speaker assignment
             speaker_map: Dict[int, str] = {}
             roles: Dict[str, str] = {}
             peer_ids: Dict[str, str] = {}
+            crosstalk_flags: List[CrosstalkFlag] = []
 
-            if speaker_log:
-                speaker_map = self._match_speakers_with_llm(raw_segments, speaker_log)
+            # Build role/peerId lookups from speaker_log
+            for entry in speaker_log:
+                roles[entry.name] = entry.role
+                peer_ids[entry.name] = entry.peerId
 
-                # Build role/peerId lookups from speaker_log
-                for entry in speaker_log:
-                    roles[entry.name] = entry.role
-                    peer_ids[entry.name] = entry.peerId
+            if self._pyannote_key:
+                # Use pyannote API for diarization
+                num_speakers = len(set(e.name for e in speaker_log)) if speaker_log else None
+                diarization = self._run_diarization(
+                    file_bytes, file_name, num_speakers=num_speakers
+                )
 
-            # Step 3: Detect crosstalk from speaker_log timing overlaps
-            speaker_turns, _, _ = _speaker_log_to_turns(speaker_log)
-            crosstalk_flags = _detect_crosstalk(speaker_turns)
+                # Map pyannote labels (SPEAKER_00) to real names from speaker_log
+                label_to_name = _map_pyannote_labels_to_names(diarization, speaker_log)
 
-            # Step 4: Build annotated output
+                # Assign speakers to VTT segments via timing overlap
+                speaker_map = self._assign_speakers_from_diarization(
+                    raw_segments, diarization, label_to_name
+                )
+
+                # Detect crosstalk from diarization overlaps (use real names)
+                renamed_diarization = [
+                    {**seg, "speaker": label_to_name.get(seg["speaker"], seg["speaker"])}
+                    for seg in diarization
+                ]
+                crosstalk_flags = _detect_crosstalk_from_diarization(renamed_diarization)
+            elif speaker_log:
+                # Fallback: use speaker_log timing for crosstalk detection only
+                speaker_turns, _, _ = _speaker_log_to_turns(speaker_log)
+                crosstalk_flags = _detect_crosstalk_from_speaker_log(speaker_turns)
+                logger.warning("No PYANNOTE_API_KEY — skipping diarization, no speaker assignment")
+
+            # Step 3: Build annotated output
             segments, annotated_vtt = self._build_annotated_output(
                 raw_segments, speaker_map, crosstalk_flags,
             )
 
             full_text = " ".join(seg.text for seg in segments)
 
-            # Build embeddings structure (empty vectors — no pyannote)
+            # Build embeddings structure (empty vectors for now)
             embeddings = [
                 SpeakerEmbedding(
                     chunk_index=idx,

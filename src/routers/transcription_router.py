@@ -1,7 +1,7 @@
 """
 /transcription router
 ---------------------
-Audio/Video-to-WebVTT transcription via pyannote + asteroid + whisper pipeline.
+Audio/Video-to-WebVTT transcription via pyannote API (diarization) + whisper pipeline.
 
 POST /transcription/generate/audio — Upload audio, get back speaker-annotated WebVTT + embeddings
 POST /transcription/generate/video — Upload MP4 video, get back speaker-annotated WebVTT + embeddings
@@ -92,11 +92,10 @@ async def generate_audio_transcription(
     ),
 ) -> TranscriptionResponse:
     """
-    Transcribe an audio file using pyannote -> asteroid -> whisper pipeline.
+    Transcribe an audio file using pyannote API (diarization) + whisper pipeline.
 
-    The speaker_log from the video call platform is used to automatically
-    match pyannote diarization labels to real participant identities via
-    timing correlation.
+    The speaker_log from the video call platform is used to map pyannote's
+    generic labels (SPEAKER_00, etc.) to real participant names via timing overlap.
 
     Returns speaker-annotated WebVTT, per-chunk embeddings, speaker stats,
     and crosstalk flags.
@@ -132,11 +131,10 @@ async def generate_video_transcription(
     ),
 ) -> TranscriptionResponse:
     """
-    Transcribe an MP4 video file using pyannote -> asteroid -> whisper pipeline.
+    Transcribe an MP4 video file using pyannote API (diarization) + whisper pipeline.
 
-    The speaker_log from the video call platform is used to automatically
-    match pyannote diarization labels to real participant identities via
-    timing correlation.
+    The speaker_log from the video call platform is used to map pyannote's
+    generic labels (SPEAKER_00, etc.) to real participant names via timing overlap.
 
     Returns speaker-annotated WebVTT, per-chunk embeddings, speaker stats,
     and crosstalk flags.
