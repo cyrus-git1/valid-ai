@@ -283,6 +283,7 @@ class TranscriptionService:
         import torch
         from pyannote.audio import Pipeline as PyannotePipeline
         from pyannote.audio import Inference as PyannoteInference
+        from pyannote.audio import Model as PyannoteModel
 
         hf_token = os.environ.get("HF_AUTH_TOKEN")
         if not hf_token:
@@ -297,11 +298,13 @@ class TranscriptionService:
             token=hf_token,
         ).to(self._device)
 
-        # pyannote speaker embedding model
-        # Inference doesn't accept token= directly; set env var for auth
-        os.environ["HF_TOKEN"] = hf_token
-        self._embedding_model = PyannoteInference(
+        # pyannote speaker embedding model — load model first, then wrap in Inference
+        embedding_model = PyannoteModel.from_pretrained(
             "pyannote/embedding",
+            token=hf_token,
+        ).to(self._device)
+        self._embedding_model = PyannoteInference(
+            embedding_model,
             device=self._device,
         )
 
