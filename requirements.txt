@@ -29,6 +29,7 @@ openpyxl
 # Audio/Video Pipeline
 pyannote.audio
 omegaconf
+soundfile
 
 # Web Scraping
 scrapy

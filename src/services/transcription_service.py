@@ -20,6 +20,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import subprocess
+
 import dotenv
 from openai import OpenAI
 
@@ -516,14 +518,25 @@ class TranscriptionService:
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
+        # Extract audio to WAV for pyannote (it can't read MP4/M4A directly)
+        wav_path = tmp_path + ".wav"
+
         try:
             logger.info(
                 "Starting transcription pipeline for %s (%d bytes)",
                 file_name, len(file_bytes),
             )
 
-            # Step 1: pyannote diarization
-            diarization_turns, raw_speaker_map = self._run_diarization(tmp_path)
+            # Convert to WAV using ffmpeg
+            logger.info("Extracting audio to WAV via ffmpeg...")
+            subprocess.run(
+                ["ffmpeg", "-i", tmp_path, "-vn", "-acodec", "pcm_s16le",
+                 "-ar", "16000", "-ac", "1", "-y", wav_path],
+                capture_output=True, check=True,
+            )
+
+            # Step 1: pyannote diarization (on WAV file)
+            diarization_turns, raw_speaker_map = self._run_diarization(wav_path)
 
             # Match pyannote labels to platform speakers via timing correlation
             effective_roles: Dict[str, str] = {}
@@ -558,9 +571,9 @@ class TranscriptionService:
 
             full_text = " ".join(seg.text for seg in segments)
 
-            # Extract pyannote embeddings per segment
+            # Extract pyannote embeddings per segment (using WAV)
             embeddings = self._extract_embeddings(
-                tmp_path, segments, effective_roles,
+                wav_path, segments, effective_roles,
             )
 
             # Compute speaker stats
@@ -584,3 +597,4 @@ class TranscriptionService:
 
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+            Path(wav_path).unlink(missing_ok=True)
