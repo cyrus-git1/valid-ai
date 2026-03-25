@@ -73,7 +73,9 @@ STRATEGIC_ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
         "3. **Evidence triangulation**: Weigh internal data (transcripts, docs) against "
         "external signals (web search) to validate or challenge assumptions.\n"
         "4. **Actionable synthesis**: Convert insights into concrete, prioritized action "
-        "points with clear ownership and expected impact.\n"
+        "points with clear ownership and expected impact. For evidence, always reference "
+        "the document title (shown in [brackets] before each chunk) rather than chunk IDs "
+        "or generic source labels.\n"
         "5. **Forward-looking recommendations**: Based on convergent patterns, project "
         "likely future developments and preemptive actions.\n\n"
         "{depth_instructions}\n"
@@ -87,7 +89,7 @@ STRATEGIC_ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
         '      "title": "short action title",\n'
         '      "description": "detailed description of what to do and why",\n'
         '      "priority": "high|medium|low",\n'
-        '      "evidence": ["source reference 1", "source reference 2"]\n'
+        '      "evidence": ["Document Title 1", "Document Title 2"]\n'
         "    }}\n"
         "  ],\n"
         '  "future_recommendations": ["recommendation 1", "recommendation 2", ...]\n'

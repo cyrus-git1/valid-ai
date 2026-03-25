@@ -37,7 +37,7 @@ class ActionPoint(BaseModel):
     priority: str = Field(description="high | medium | low")
     evidence: List[str] = Field(
         default_factory=list,
-        description="Sources that support this recommendation (chunk refs, web links, etc.).",
+        description="Document titles that support this recommendation.",
     )
 
 
