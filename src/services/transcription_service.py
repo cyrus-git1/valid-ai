@@ -902,32 +902,42 @@ No explanation, no markdown fences, just the JSON array."""
 
                 # Check if pyannote under-detected speakers
                 detected_speakers = len(set(seg["speaker"] for seg in diarization)) if diarization else 0
+
+                # Also try the normal merge first to check quality
+                label_to_name = _map_pyannote_labels_to_names(diarization, speaker_log)
+                merged_segments = self._merge_words_with_diarization(
+                    words, diarization, label_to_name
+                )
+
+                # Detect poor diarization: under-detected speakers OR
+                # merge collapsed everything into very few segments (≤2 for multi-speaker)
                 use_llm_fallback = (
                     expected_speakers is not None
                     and expected_speakers > 1
-                    and detected_speakers < expected_speakers
                     and words
+                    and (
+                        detected_speakers < expected_speakers
+                        or len(merged_segments) <= 2
+                    )
                 )
 
                 if use_llm_fallback:
-                    # ── LLM fallback: pyannote missed speakers ──
+                    # ── LLM fallback: pyannote diarization was poor ──
+                    reason = (
+                        f"detected {detected_speakers} speaker(s) vs {expected_speakers} expected"
+                        if detected_speakers < expected_speakers
+                        else f"merge produced only {len(merged_segments)} segment(s) for {len(words)} words"
+                    )
                     logger.info(
-                        "Pyannote detected %d speaker(s) but speaker_log has %d — "
-                        "falling back to LLM speaker assignment",
-                        detected_speakers, expected_speakers,
+                        "Pyannote diarization inadequate (%s) — "
+                        "falling back to LLM speaker assignment", reason,
                     )
                     merged_segments = self._assign_speakers_with_llm(words, speaker_log)
 
                     speaker_turns, _, _ = _speaker_log_to_turns(speaker_log)
                     crosstalk_flags = _detect_crosstalk_from_speaker_log(speaker_turns)
                 else:
-                    # ── Normal path: pyannote drives segmentation ──
-                    label_to_name = _map_pyannote_labels_to_names(diarization, speaker_log)
-
-                    merged_segments = self._merge_words_with_diarization(
-                        words, diarization, label_to_name
-                    )
-
+                    # ── Normal path: pyannote merge was good ──
                     renamed_diarization = [
                         {**seg, "speaker": label_to_name.get(seg["speaker"], seg["speaker"])}
                         for seg in diarization
