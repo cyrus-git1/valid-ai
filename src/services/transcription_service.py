@@ -884,7 +884,7 @@ No explanation, no markdown fences, just the JSON array."""
                         "ffmpeg", "-i", tmp_path,
                         "-vn",              # no video
                         "-acodec", "aac",   # AAC codec for m4a
-                        "-b:a", "128k",     # 128kbps bitrate
+                        "-b:a", "64k",      # 64kbps (keeps under Whisper 25MB limit for ~50min)
                         "-y",               # overwrite
                         audio_path,
                     ],
