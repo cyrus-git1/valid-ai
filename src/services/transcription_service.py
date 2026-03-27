@@ -517,14 +517,21 @@ class TranscriptionService:
         word to a pyannote turn (by timing overlap), then group consecutive words
         by speaker into natural segments.
 
+        Words that fall in micro-gaps between diarization turns are assigned to
+        the nearest turn (within 2 seconds) to prevent UNKNOWN fragments.
+
         Returns list of dicts: [{start, end, speaker, text}, ...]
         """
         if not words:
             return []
 
+        _MAX_GAP_SEC = 2.0  # max distance to nearest turn for gap assignment
+
         # Assign each word to a diarization speaker
         word_speakers: List[Optional[str]] = []
-        for w in words:
+        unassigned_indices: List[int] = []
+
+        for i, w in enumerate(words):
             best_label = None
             best_overlap = 0.0
             for d_seg in diarization:
@@ -533,6 +540,40 @@ class TranscriptionService:
                     best_overlap = ov
                     best_label = d_seg["speaker"]
             word_speakers.append(best_label)
+            if best_label is None:
+                unassigned_indices.append(i)
+
+        # Nearest-neighbor assignment for gap words
+        if unassigned_indices and diarization:
+            reassigned = 0
+            for idx in unassigned_indices:
+                w = words[idx]
+                w_mid = (w["start"] + w["end"]) / 2.0
+                nearest_label = None
+                nearest_dist = float("inf")
+
+                for d_seg in diarization:
+                    # Distance from word midpoint to nearest edge of the turn
+                    if w_mid < d_seg["start"]:
+                        dist = d_seg["start"] - w_mid
+                    elif w_mid > d_seg["end"]:
+                        dist = w_mid - d_seg["end"]
+                    else:
+                        dist = 0.0  # inside the turn (shouldn't happen if overlap was 0)
+
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_label = d_seg["speaker"]
+
+                if nearest_dist <= _MAX_GAP_SEC and nearest_label:
+                    word_speakers[idx] = nearest_label
+                    reassigned += 1
+
+            if reassigned:
+                logger.info(
+                    "Nearest-neighbor gap fix: reassigned %d/%d unassigned words",
+                    reassigned, len(unassigned_indices),
+                )
 
         # Group consecutive words by speaker into segments
         segments: List[dict] = []
@@ -561,6 +602,25 @@ class TranscriptionService:
                 "speaker": label_to_name.get(current_speaker, current_speaker) if current_speaker else None,
                 "text": " ".join(w["word"].strip() for w in current_words),
             })
+
+        # Coalesce adjacent segments with the same speaker
+        # (after gap-filling, SPEAKER_01 | was-UNKNOWN-now-SPEAKER_01 | SPEAKER_01 merges)
+        if len(segments) > 1:
+            coalesced: List[dict] = [segments[0]]
+            for seg in segments[1:]:
+                prev = coalesced[-1]
+                if seg["speaker"] == prev["speaker"]:
+                    prev["end"] = seg["end"]
+                    prev["text"] = prev["text"] + " " + seg["text"]
+                else:
+                    coalesced.append(seg)
+
+            if len(coalesced) < len(segments):
+                logger.info(
+                    "Segment coalescence: %d -> %d segments",
+                    len(segments), len(coalesced),
+                )
+            segments = coalesced
 
         logger.info(
             "Word-level merge: %d words -> %d speaker segments",
