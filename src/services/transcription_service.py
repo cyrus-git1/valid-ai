@@ -15,6 +15,7 @@ Import
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -665,6 +666,110 @@ class TranscriptionService:
         logger.info("Speaker assignment: %d/%d segments matched", len(speaker_map), len(raw_segments))
         return speaker_map
 
+    # ---------- LLM speaker assignment fallback ----------
+
+    _LLM_SPEAKER_PROMPT = """\
+You are a speaker attribution engine for video call transcripts.
+
+You receive:
+1. A list of words with timestamps from a speech-to-text system.
+2. Participant info from a video call platform showing who was on the call.
+
+Your job: segment the words into speaker turns and assign the correct speaker
+name to each segment based on CONVERSATIONAL CONTEXT.
+
+Rules:
+- Use conversational context as the PRIMARY signal: who asks questions vs
+  answers, acknowledgments ("mm hmm", "yeah", "all right"), request-response
+  patterns, topic initiator vs responder.
+- Do NOT rely on timing to determine who spoke — timing data is unreliable.
+- Each word belongs to exactly one speaker.
+- Group consecutive words by the same speaker into segments.
+- A speaker change typically occurs at natural conversation boundaries.
+- Use the exact speaker names provided.
+
+Return ONLY a JSON array of segments:
+[{"start": <seconds>, "end": <seconds>, "speaker": "<exact name>", "text": "words in this segment"}]
+No explanation, no markdown fences, just the JSON array."""
+
+    def _assign_speakers_with_llm(
+        self,
+        words: List[dict],
+        speaker_log: List[SpeakerLogEntry],
+    ) -> List[dict]:
+        """
+        Use GPT-4o-mini to assign speakers when pyannote under-detects.
+        Returns list of dicts: [{start, end, speaker, text}, ...]
+        """
+        speaker_names = sorted(set(e.name for e in speaker_log))
+        seen = set()
+        unique_speakers = []
+        for e in speaker_log:
+            if e.name not in seen:
+                unique_speakers.append({"name": e.name, "role": e.role})
+                seen.add(e.name)
+
+        word_list = [
+            {"word": w["word"].strip(), "start": round(w["start"], 3), "end": round(w["end"], 3)}
+            for w in words
+        ]
+
+        user_content = (
+            f"Speakers: {json.dumps(unique_speakers)}\n\n"
+            f"Words with timestamps:\n{json.dumps(word_list)}"
+        )
+
+        logger.info(
+            "LLM speaker assignment: %d words, %d speakers (%s)",
+            len(words), len(speaker_names), ", ".join(speaker_names),
+        )
+
+        response = self._client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": self._LLM_SPEAKER_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+        )
+
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+        try:
+            segments = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.error("LLM speaker assignment returned invalid JSON: %s", raw[:500])
+            return [{
+                "start": _sec_to_ts(words[0]["start"]),
+                "end": _sec_to_ts(words[-1]["end"]),
+                "speaker": "UNKNOWN",
+                "text": " ".join(w["word"].strip() for w in words),
+            }]
+
+        result = []
+        for seg in segments:
+            speaker = seg.get("speaker", "UNKNOWN")
+            if speaker not in speaker_names:
+                for name in speaker_names:
+                    if name.lower() in speaker.lower() or speaker.lower() in name.lower():
+                        speaker = name
+                        break
+            result.append({
+                "start": _sec_to_ts(float(seg["start"])),
+                "end": _sec_to_ts(float(seg["end"])),
+                "speaker": speaker,
+                "text": seg.get("text", ""),
+            })
+
+        logger.info(
+            "LLM speaker assignment complete: %d segments, speakers: %s",
+            len(result), sorted(set(s["speaker"] for s in result)),
+        )
+        return result
+
     # ---------- build output ----------
 
     def _build_annotated_output(
@@ -786,23 +891,48 @@ class TranscriptionService:
             crosstalk_flags: List[CrosstalkFlag] = []
 
             if self._pyannote_key:
-                # ── Word-level pipeline: pyannote drives segmentation ──
-                # Step 1: Run pyannote diarization + Whisper word timestamps in parallel concept
-                num_speakers = len(set(e.name for e in speaker_log)) if speaker_log else None
+                # ── Word-level pipeline: pyannote + Whisper ──
+                expected_speakers = len(set(e.name for e in speaker_log)) if speaker_log else None
                 diarization = self._run_diarization(
-                    file_bytes, file_name, num_speakers=num_speakers
+                    file_bytes, file_name, num_speakers=expected_speakers
                 )
 
-                # Step 2: Whisper with word-level timestamps
+                # Whisper with word-level timestamps
                 words = self._run_whisper_verbose(tmp_path, language=language)
 
-                # Map pyannote labels to real names
-                label_to_name = _map_pyannote_labels_to_names(diarization, speaker_log)
-
-                # Step 3: Re-segment words by speaker turns (pyannote drives segmentation)
-                merged_segments = self._merge_words_with_diarization(
-                    words, diarization, label_to_name
+                # Check if pyannote under-detected speakers
+                detected_speakers = len(set(seg["speaker"] for seg in diarization)) if diarization else 0
+                use_llm_fallback = (
+                    expected_speakers is not None
+                    and expected_speakers > 1
+                    and detected_speakers < expected_speakers
+                    and words
                 )
+
+                if use_llm_fallback:
+                    # ── LLM fallback: pyannote missed speakers ──
+                    logger.info(
+                        "Pyannote detected %d speaker(s) but speaker_log has %d — "
+                        "falling back to LLM speaker assignment",
+                        detected_speakers, expected_speakers,
+                    )
+                    merged_segments = self._assign_speakers_with_llm(words, speaker_log)
+
+                    speaker_turns, _, _ = _speaker_log_to_turns(speaker_log)
+                    crosstalk_flags = _detect_crosstalk_from_speaker_log(speaker_turns)
+                else:
+                    # ── Normal path: pyannote drives segmentation ──
+                    label_to_name = _map_pyannote_labels_to_names(diarization, speaker_log)
+
+                    merged_segments = self._merge_words_with_diarization(
+                        words, diarization, label_to_name
+                    )
+
+                    renamed_diarization = [
+                        {**seg, "speaker": label_to_name.get(seg["speaker"], seg["speaker"])}
+                        for seg in diarization
+                    ]
+                    crosstalk_flags = _detect_crosstalk_from_diarization(renamed_diarization)
 
                 # Convert to raw_segments format + speaker_map
                 raw_segments = []
@@ -813,13 +943,6 @@ class TranscriptionService:
                         "text": seg["text"],
                     })
                     speaker_map[len(raw_segments)] = seg["speaker"] or "UNKNOWN"
-
-                # Detect crosstalk from diarization overlaps (use real names)
-                renamed_diarization = [
-                    {**seg, "speaker": label_to_name.get(seg["speaker"], seg["speaker"])}
-                    for seg in diarization
-                ]
-                crosstalk_flags = _detect_crosstalk_from_diarization(renamed_diarization)
             else:
                 # ── VTT pipeline: Whisper drives segmentation ──
                 raw_vtt = self._run_whisper(tmp_path, language=language)
