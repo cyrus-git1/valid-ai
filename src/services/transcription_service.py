@@ -463,15 +463,15 @@ class TranscriptionService:
     ) -> str:
         """Transcribe audio with Whisper and return raw VTT string."""
         logger.info("Running Whisper transcription...")
-        kwargs: Dict[str, Any] = {
-            "model": "whisper-1",
-            "file": open(audio_path, "rb"),
-            "response_format": "vtt",
-        }
-        if language:
-            kwargs["language"] = language
-
-        vtt: str = self._client.audio.transcriptions.create(**kwargs)
+        with open(audio_path, "rb") as f:
+            kwargs: Dict[str, Any] = {
+                "model": "whisper-1",
+                "file": f,
+                "response_format": "vtt",
+            }
+            if language:
+                kwargs["language"] = language
+            vtt: str = self._client.audio.transcriptions.create(**kwargs)
         logger.info("Whisper transcription complete — %d chars of VTT", len(vtt))
         return vtt
 
@@ -485,16 +485,16 @@ class TranscriptionService:
         Returns a list of word dicts: [{"word": str, "start": float, "end": float}, ...]
         """
         logger.info("Running Whisper transcription (verbose_json)...")
-        kwargs: Dict[str, Any] = {
-            "model": "whisper-1",
-            "file": open(audio_path, "rb"),
-            "response_format": "verbose_json",
-            "timestamp_granularities": ["word"],
-        }
-        if language:
-            kwargs["language"] = language
-
-        result = self._client.audio.transcriptions.create(**kwargs)
+        with open(audio_path, "rb") as f:
+            kwargs: Dict[str, Any] = {
+                "model": "whisper-1",
+                "file": f,
+                "response_format": "verbose_json",
+                "timestamp_granularities": ["word"],
+            }
+            if language:
+                kwargs["language"] = language
+            result = self._client.audio.transcriptions.create(**kwargs)
         words = result.words or []
         logger.info(
             "Whisper transcription complete — %d words with timestamps",
