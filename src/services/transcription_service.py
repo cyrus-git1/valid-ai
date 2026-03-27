@@ -873,6 +873,43 @@ No explanation, no markdown fences, just the JSON array."""
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
+        # Extract audio from video formats to m4a (smaller, faster for pyannote/whisper)
+        audio_path = tmp_path
+        if suffix.lower() in (".mp4", ".webm", ".mkv", ".avi", ".mov"):
+            audio_path = tmp_path.rsplit(".", 1)[0] + ".m4a"
+            try:
+                import subprocess
+                result = subprocess.run(
+                    [
+                        "ffmpeg", "-i", tmp_path,
+                        "-vn",              # no video
+                        "-acodec", "aac",   # AAC codec for m4a
+                        "-b:a", "128k",     # 128kbps bitrate
+                        "-y",               # overwrite
+                        audio_path,
+                    ],
+                    capture_output=True, timeout=120,
+                )
+                if result.returncode == 0:
+                    audio_size = Path(audio_path).stat().st_size
+                    logger.info(
+                        "Extracted audio: %s -> %s (%d bytes -> %d bytes)",
+                        file_name, Path(audio_path).name, len(file_bytes), audio_size,
+                    )
+                    # Use extracted audio bytes for pyannote upload
+                    with open(audio_path, "rb") as af:
+                        file_bytes = af.read()
+                    file_name = Path(file_name).stem + ".m4a"
+                else:
+                    logger.warning(
+                        "ffmpeg audio extraction failed (rc=%d): %s",
+                        result.returncode, result.stderr.decode()[:500],
+                    )
+                    audio_path = tmp_path  # fall back to original
+            except Exception as e:
+                logger.warning("Audio extraction failed: %s — using original file", e)
+                audio_path = tmp_path
+
         try:
             logger.info(
                 "Starting transcription pipeline for %s (%d bytes)",
@@ -898,7 +935,7 @@ No explanation, no markdown fences, just the JSON array."""
                 )
 
                 # Whisper with word-level timestamps
-                words = self._run_whisper_verbose(tmp_path, language=language)
+                words = self._run_whisper_verbose(audio_path, language=language)
 
                 # Check if pyannote under-detected speakers
                 detected_speakers = len(set(seg["speaker"] for seg in diarization)) if diarization else 0
@@ -955,7 +992,7 @@ No explanation, no markdown fences, just the JSON array."""
                     speaker_map[len(raw_segments)] = seg["speaker"] or "UNKNOWN"
             else:
                 # ── VTT pipeline: Whisper drives segmentation ──
-                raw_vtt = self._run_whisper(tmp_path, language=language)
+                raw_vtt = self._run_whisper(audio_path, language=language)
                 raw_segments = _parse_vtt(raw_vtt)
 
                 if speaker_log:
@@ -1003,3 +1040,5 @@ No explanation, no markdown fences, just the JSON array."""
 
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+            if audio_path != tmp_path:
+                Path(audio_path).unlink(missing_ok=True)
