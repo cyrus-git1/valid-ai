@@ -475,7 +475,100 @@ class TranscriptionService:
         logger.info("Whisper transcription complete — %d chars of VTT", len(vtt))
         return vtt
 
-    # ---------- merge diarization + VTT ----------
+    def _run_whisper_verbose(
+        self,
+        audio_path: str,
+        language: Optional[str] = None,
+    ) -> List[dict]:
+        """Transcribe audio with Whisper verbose_json for word-level timestamps.
+
+        Returns a list of word dicts: [{"word": str, "start": float, "end": float}, ...]
+        """
+        logger.info("Running Whisper transcription (verbose_json)...")
+        kwargs: Dict[str, Any] = {
+            "model": "whisper-1",
+            "file": open(audio_path, "rb"),
+            "response_format": "verbose_json",
+            "timestamp_granularities": ["word"],
+        }
+        if language:
+            kwargs["language"] = language
+
+        result = self._client.audio.transcriptions.create(**kwargs)
+        words = result.words or []
+        logger.info(
+            "Whisper transcription complete — %d words with timestamps",
+            len(words),
+        )
+        return [{"word": w.word, "start": w.start, "end": w.end} for w in words]
+
+    # ---------- merge diarization + words ----------
+
+    def _merge_words_with_diarization(
+        self,
+        words: List[dict],
+        diarization: List[dict],
+        label_to_name: Dict[str, str],
+    ) -> List[dict]:
+        """
+        Re-segment Whisper words according to pyannote speaker turns.
+
+        Instead of using Whisper's arbitrary VTT cue boundaries, we assign each
+        word to a pyannote turn (by timing overlap), then group consecutive words
+        by speaker into natural segments.
+
+        Returns list of dicts: [{start, end, speaker, text}, ...]
+        """
+        if not words:
+            return []
+
+        # Assign each word to a diarization speaker
+        word_speakers: List[Optional[str]] = []
+        for w in words:
+            best_label = None
+            best_overlap = 0.0
+            for d_seg in diarization:
+                ov = max(0.0, min(w["end"], d_seg["end"]) - max(w["start"], d_seg["start"]))
+                if ov > best_overlap:
+                    best_overlap = ov
+                    best_label = d_seg["speaker"]
+            word_speakers.append(best_label)
+
+        # Group consecutive words by speaker into segments
+        segments: List[dict] = []
+        current_speaker = word_speakers[0]
+        current_words: List[dict] = [words[0]]
+
+        for i in range(1, len(words)):
+            if word_speakers[i] == current_speaker:
+                current_words.append(words[i])
+            else:
+                # Flush current segment
+                segments.append({
+                    "start": _sec_to_ts(current_words[0]["start"]),
+                    "end": _sec_to_ts(current_words[-1]["end"]),
+                    "speaker": label_to_name.get(current_speaker, current_speaker) if current_speaker else None,
+                    "text": " ".join(w["word"].strip() for w in current_words),
+                })
+                current_speaker = word_speakers[i]
+                current_words = [words[i]]
+
+        # Flush last segment
+        if current_words:
+            segments.append({
+                "start": _sec_to_ts(current_words[0]["start"]),
+                "end": _sec_to_ts(current_words[-1]["end"]),
+                "speaker": label_to_name.get(current_speaker, current_speaker) if current_speaker else None,
+                "text": " ".join(w["word"].strip() for w in current_words),
+            })
+
+        logger.info(
+            "Word-level merge: %d words -> %d speaker segments",
+            len(words), len(segments),
+        )
+        return segments
+
+    # ---------- legacy: merge diarization + VTT cues ----------
 
     def _assign_speakers_from_diarization(
         self,
@@ -484,10 +577,8 @@ class TranscriptionService:
         label_to_name: Dict[str, str],
     ) -> Dict[int, str]:
         """
-        Assign speakers to VTT segments based on pyannote diarization timing overlap.
-
-        For each VTT segment, finds the diarization turn with the most overlap
-        and assigns that speaker (mapped to real name via label_to_name).
+        Fallback: Assign speakers to VTT segments based on pyannote diarization
+        timing overlap (used when word-level timestamps are unavailable).
 
         Returns dict: segment index (1-based) -> speaker name.
         """
@@ -621,35 +712,45 @@ class TranscriptionService:
                 file_name, len(file_bytes),
             )
 
-            # Step 1: Whisper transcription
-            raw_vtt = self._run_whisper(tmp_path, language=language)
-            raw_segments = _parse_vtt(raw_vtt)
-
-            # Step 2: Diarization + speaker assignment
-            speaker_map: Dict[int, str] = {}
+            # Build role/peerId lookups from speaker_log
             roles: Dict[str, str] = {}
             peer_ids: Dict[str, str] = {}
-            crosstalk_flags: List[CrosstalkFlag] = []
-
-            # Build role/peerId lookups from speaker_log
             for entry in speaker_log:
                 roles[entry.name] = entry.role
                 peer_ids[entry.name] = entry.peerId
 
+            raw_segments: List[dict] = []
+            speaker_map: Dict[int, str] = {}
+            crosstalk_flags: List[CrosstalkFlag] = []
+
             if self._pyannote_key:
-                # Use pyannote API for diarization
+                # ── Word-level pipeline: pyannote drives segmentation ──
+                # Step 1: Run pyannote diarization + Whisper word timestamps in parallel concept
                 num_speakers = len(set(e.name for e in speaker_log)) if speaker_log else None
                 diarization = self._run_diarization(
                     file_bytes, file_name, num_speakers=num_speakers
                 )
 
-                # Map pyannote labels (SPEAKER_00) to real names from speaker_log
+                # Step 2: Whisper with word-level timestamps
+                words = self._run_whisper_verbose(tmp_path, language=language)
+
+                # Map pyannote labels to real names
                 label_to_name = _map_pyannote_labels_to_names(diarization, speaker_log)
 
-                # Assign speakers to VTT segments via timing overlap
-                speaker_map = self._assign_speakers_from_diarization(
-                    raw_segments, diarization, label_to_name
+                # Step 3: Re-segment words by speaker turns (pyannote drives segmentation)
+                merged_segments = self._merge_words_with_diarization(
+                    words, diarization, label_to_name
                 )
+
+                # Convert to raw_segments format + speaker_map
+                raw_segments = []
+                for seg in merged_segments:
+                    raw_segments.append({
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "text": seg["text"],
+                    })
+                    speaker_map[len(raw_segments)] = seg["speaker"] or "UNKNOWN"
 
                 # Detect crosstalk from diarization overlaps (use real names)
                 renamed_diarization = [
@@ -657,13 +758,17 @@ class TranscriptionService:
                     for seg in diarization
                 ]
                 crosstalk_flags = _detect_crosstalk_from_diarization(renamed_diarization)
-            elif speaker_log:
-                # Fallback: use speaker_log timing for crosstalk detection only
-                speaker_turns, _, _ = _speaker_log_to_turns(speaker_log)
-                crosstalk_flags = _detect_crosstalk_from_speaker_log(speaker_turns)
-                logger.warning("No PYANNOTE_API_KEY — skipping diarization, no speaker assignment")
+            else:
+                # ── VTT pipeline: Whisper drives segmentation ──
+                raw_vtt = self._run_whisper(tmp_path, language=language)
+                raw_segments = _parse_vtt(raw_vtt)
 
-            # Step 3: Build annotated output
+                if speaker_log:
+                    speaker_turns, _, _ = _speaker_log_to_turns(speaker_log)
+                    crosstalk_flags = _detect_crosstalk_from_speaker_log(speaker_turns)
+                    logger.warning("No PYANNOTE_API_KEY — skipping diarization, no speaker assignment")
+
+            # Step 4: Build annotated output
             segments, annotated_vtt = self._build_annotated_output(
                 raw_segments, speaker_map, crosstalk_flags,
             )
