@@ -368,7 +368,9 @@ class TranscriptionService:
 
     def _pyannote_upload(self, file_bytes: bytes, file_name: str) -> str:
         """Upload audio to pyannote and return the media:// URL."""
-        media_url = f"media://valid/{file_name}"
+        # Sanitize filename: only allow alphanumeric, hyphens, underscores, dots
+        safe_name = re.sub(r"[^a-zA-Z0-9\-_.]", "_", file_name)
+        media_url = f"media://valid/{safe_name}"
 
         with httpx.Client(timeout=60) as client:
             # Step 1: Get presigned upload URL
