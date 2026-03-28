@@ -108,16 +108,20 @@ def delete_documents(
     Cascade deletes (via ON DELETE CASCADE in SQL schema):
       - chunks
       - kg_node_evidence, kg_edge_evidence (via chunk foreign keys)
-      - KG edges between deleted nodes
+
+    Post-delete cleanup:
+      - Orphaned KG nodes (zero evidence remaining) are deleted
+      - KG edges cascade-delete when their nodes are removed
     """
     sb = get_supabase()
     deleted = 0
     not_found: list[str] = []
+    affected_client_ids: set[str] = set()
 
     for doc_id in body.document_ids:
         res = (
             sb.table("documents")
-            .select("id")
+            .select("id, client_id")
             .eq("id", doc_id)
             .eq("tenant_id", str(tenant_id))
             .limit(1)
@@ -127,8 +131,27 @@ def delete_documents(
             not_found.append(doc_id)
             continue
 
+        client_id = res.data[0].get("client_id")
+        if client_id:
+            affected_client_ids.add(client_id)
+
         sb.table("documents").delete().eq("id", doc_id).eq("tenant_id", str(tenant_id)).execute()
         deleted += 1
         logger.info("Deleted document %s (tenant %s)", doc_id, tenant_id)
+
+    # Clean up orphaned KG nodes (and their edges) for each affected client
+    if deleted > 0:
+        for client_id in affected_client_ids:
+            try:
+                cleanup = sb.rpc(
+                    "cleanup_orphaned_kg_nodes",
+                    {"p_tenant_id": str(tenant_id), "p_client_id": client_id},
+                ).execute()
+                logger.info(
+                    "KG cleanup for tenant=%s client=%s: %s",
+                    tenant_id, client_id, cleanup.data,
+                )
+            except Exception as e:
+                logger.warning("KG orphan cleanup failed for client %s: %s", client_id, e)
 
     return BulkDeleteResponse(deleted=deleted, not_found=not_found)
