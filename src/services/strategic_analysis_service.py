@@ -81,11 +81,20 @@ class StrategicAnalysisService(BaseAnalysisService):
         )
         transcript_context = self._build_transcript_context(transcript_chunks)
 
-        # Context summary
+        # Context summary — always regenerate to reflect latest ingested data
         summary_svc = ContextSummaryService(self.sb)
-        existing_summary = summary_svc.get_summary(
-            tenant_id=tenant_id, client_id=client_id,
-        )
+        logger.info("Regenerating context summary for tenant=%s client=%s", tenant_id, client_id)
+        try:
+            summary_result = summary_svc.generate_summary(
+                tenant_id=tenant_id, client_id=client_id, force_regenerate=True,
+            )
+            existing_summary = summary_result.get("summary_row")
+        except Exception as e:
+            logger.warning("Context summary regeneration failed: %s", e)
+            existing_summary = summary_svc.get_summary(
+                tenant_id=tenant_id, client_id=client_id,
+            )
+
         if existing_summary:
             context_summary = (
                 f"Summary: {existing_summary.get('summary', 'N/A')}\n"
