@@ -239,9 +239,9 @@ class StrategicAnalysisService(BaseAnalysisService):
     def _resolve_document_titles(self, docs: list) -> Dict[str, str]:
         """Batch-fetch document titles for a list of LangChain Documents.
 
-        Returns a mapping of document_id → title for all docs that have a
-        document_id in their metadata. Falls back gracefully if the DB
-        query fails.
+        Returns a mapping of document_id → label for all docs that have a
+        document_id in their metadata. Uses title if available, falls back
+        to source_uri for web-ingested documents.
         """
         doc_ids = list({
             doc.metadata.get("document_id")
@@ -254,15 +254,17 @@ class StrategicAnalysisService(BaseAnalysisService):
         try:
             res = (
                 self.sb.table("documents")
-                .select("id, title")
+                .select("id, title, source_uri, source_type")
                 .in_("id", doc_ids)
                 .execute()
             )
-            return {
-                row["id"]: row["title"]
-                for row in (res.data or [])
-                if row.get("title")
-            }
+            result = {}
+            for row in (res.data or []):
+                if row.get("title"):
+                    result[row["id"]] = row["title"]
+                elif row.get("source_type") == "web" and row.get("source_uri"):
+                    result[row["id"]] = row["source_uri"]
+            return result
         except Exception as e:
             logger.warning("Failed to resolve document titles: %s", e)
             return {}
