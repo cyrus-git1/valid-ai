@@ -174,7 +174,7 @@ class StrategicAnalysisService(BaseAnalysisService):
             industry = ""
             if client_profile and client_profile.get("industry"):
                 industry = client_profile["industry"] + " "
-            queries = [f"{industry}{search_query}"]
+            queries = [f"{industry}{focus_query or 'overall strategic summary'}"]
 
         web_parts = []
         for q in queries[:3]:
