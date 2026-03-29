@@ -4,7 +4,7 @@ WORKDIR /app
 
 # System deps for spaCy, PyMuPDF, and general build
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc g++ && \
+    apt-get install -y --no-install-recommends gcc g++ ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
