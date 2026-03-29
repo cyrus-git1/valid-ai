@@ -84,19 +84,20 @@ def _run_firecrawl_scraper(url: str, output_file: str = "scraped_data.json") -> 
     app = FirecrawlApp(api_key=api_key)
 
     # Use crawl for full site crawl (follows internal links)
-    crawl_result = app.crawl_url(
-        url,
-        params={
-            "limit": 50,
-            "scrapeOptions": {
-                "formats": ["markdown"],
-            },
-        },
-        poll_interval=5,
-    )
-
-    # crawl_result is a CrawlStatusResponse with .data list
-    raw_pages = crawl_result.data if hasattr(crawl_result, "data") else []
+    try:
+        crawl_result = app.crawl(
+            url,
+            limit=50,
+            scrape_options={"formats": ["markdown"]},
+            poll_interval=5,
+        )
+        # crawl returns a list or object with .data
+        raw_pages = crawl_result.data if hasattr(crawl_result, "data") else (crawl_result if isinstance(crawl_result, list) else [])
+    except Exception as e:
+        print(f"Firecrawl crawl failed ({e}), trying single-page scrape")
+        # Fall back to single page scrape
+        scrape_result = app.scrape(url, formats=["markdown"])
+        raw_pages = [scrape_result]
 
     pages = []
     for idx, item in enumerate(raw_pages, start=1):
