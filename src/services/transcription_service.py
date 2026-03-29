@@ -485,8 +485,84 @@ class TranscriptionService:
     ) -> List[dict]:
         """Transcribe audio with Whisper verbose_json for word-level timestamps.
 
+        If the audio file exceeds Whisper's 25MB limit, it is automatically
+        split into ~10-minute chunks, each transcribed separately, and the
+        word timestamps are offset to produce a seamless merged result.
+
         Returns a list of word dicts: [{"word": str, "start": float, "end": float}, ...]
         """
+        max_whisper_bytes = 25 * 1024 * 1024  # 25MB
+        file_size = Path(audio_path).stat().st_size
+
+        if file_size <= max_whisper_bytes:
+            return self._whisper_single(audio_path, language)
+
+        # ── Chunk the audio for Whisper ──
+        logger.info(
+            "Audio %d bytes exceeds 25MB limit — splitting into chunks",
+            file_size,
+        )
+        import subprocess
+
+        # Get duration in seconds
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", audio_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        duration = float(probe.stdout.strip())
+        chunk_duration = 600  # 10 minutes per chunk
+
+        all_words: List[dict] = []
+        chunk_idx = 0
+        offset = 0.0
+
+        while offset < duration:
+            chunk_path = audio_path.rsplit(".", 1)[0] + f"_chunk{chunk_idx}.m4a"
+            subprocess.run(
+                [
+                    "ffmpeg", "-i", audio_path,
+                    "-ss", str(offset),
+                    "-t", str(chunk_duration),
+                    "-vn", "-acodec", "aac", "-b:a", "64k",
+                    "-y", chunk_path,
+                ],
+                capture_output=True, timeout=120,
+            )
+
+            chunk_words = self._whisper_single(chunk_path, language)
+
+            # Offset timestamps by chunk start time
+            for w in chunk_words:
+                w["start"] += offset
+                w["end"] += offset
+            all_words.extend(chunk_words)
+
+            # Cleanup chunk file
+            try:
+                Path(chunk_path).unlink()
+            except OSError:
+                pass
+
+            logger.info(
+                "Chunk %d (offset=%.1fs): %d words",
+                chunk_idx, offset, len(chunk_words),
+            )
+            offset += chunk_duration
+            chunk_idx += 1
+
+        logger.info(
+            "Whisper chunked transcription complete — %d total words from %d chunks",
+            len(all_words), chunk_idx,
+        )
+        return all_words
+
+    def _whisper_single(
+        self,
+        audio_path: str,
+        language: Optional[str] = None,
+    ) -> List[dict]:
+        """Transcribe a single audio file with Whisper verbose_json."""
         logger.info("Running Whisper transcription (verbose_json)...")
         with open(audio_path, "rb") as f:
             kwargs: Dict[str, Any] = {
@@ -884,7 +960,7 @@ No explanation, no markdown fences, just the JSON array."""
                         "ffmpeg", "-i", tmp_path,
                         "-vn",              # no video
                         "-acodec", "aac",   # AAC codec for m4a
-                        "-b:a", "64k",      # 64kbps (keeps under Whisper 25MB limit for ~50min)
+                        "-b:a", "64k",      # 64kbps
                         "-y",               # overwrite
                         audio_path,
                     ],
