@@ -206,12 +206,16 @@ def ingest_web(
       4. Embeds with OpenAI text-embedding-3-small
       5. Stores in the chunks table
     """
+    url = req.url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+
     job_id = str(uuid.uuid4())
     sb = get_supabase()
 
     background_tasks.add_task(
         _run_web_ingest,
-        job_id, sb, req.url,
+        job_id, sb, url,
         req.tenant_id, req.client_id,
         req.title, req.metadata, req.prune_after_ingest,
     )
@@ -303,10 +307,13 @@ def _run_batch_web_ingest(
         _batches[batch_id]["items"][i]["status"] = "running"
         try:
             svc = IngestService(sb)
+            raw_url = item["url"].strip()
+            if not raw_url.startswith(("http://", "https://")):
+                raw_url = f"https://{raw_url}"
             result = svc.ingest(IngestInput(
                 tenant_id=tenant_id,
                 client_id=client_id,
-                web_url=item["url"],
+                web_url=raw_url,
                 title=item.get("title"),
                 metadata=item.get("metadata", {}),
                 prune_after_ingest=prune_after_ingest and (i == len(items) - 1),
