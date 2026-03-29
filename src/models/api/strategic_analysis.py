@@ -17,7 +17,7 @@ from src.models.base import TenantScoped, TenantScopedRequest
 class AnalysisParams(BaseModel):
     """Shared tuning knobs reused across single and all requests."""
 
-    top_k: int = Field(default=10, description="Number of KG nodes to retrieve.")
+    top_k: int = Field(default=25, description="Number of KG nodes to retrieve.")
     hop_limit: int = Field(default=1, description="Graph expansion hops.")
     web_search_queries: List[str] = Field(
         default_factory=list,
@@ -82,7 +82,7 @@ class StrategicAnalysisRequest(TenantScopedRequest):
     synthesizes everything available.
     """
 
-    top_k: int = Field(default=10, description="Number of KG nodes to retrieve.")
+    top_k: int = Field(default=25, description="Number of KG nodes to retrieve.")
     hop_limit: int = Field(default=1, description="Graph expansion hops.")
     web_search_queries: List[str] = Field(
         default_factory=list,

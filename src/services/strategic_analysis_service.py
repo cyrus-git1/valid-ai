@@ -77,7 +77,7 @@ class StrategicAnalysisService(BaseAnalysisService):
 
         transcript_chunks = self._get_transcript_chunks(
             tenant_id, client_id,
-            limit=15 + (transcript_count * 5),
+            limit=30 + (transcript_count * 10),
         )
         transcript_context = self._build_transcript_context(transcript_chunks)
 
@@ -129,20 +129,34 @@ class StrategicAnalysisService(BaseAnalysisService):
     ) -> Dict[str, Any]:
         """Execute the convergent analysis for a single focus_query (or overall summary)."""
 
-        # Default query for KG retrieval when no focus_query provided
-        search_query = focus_query or "overall strategic summary"
-
-        # KG retrieval (query-specific)
+        # KG retrieval — use multiple diverse queries to maximize coverage
         search_svc = SearchService(
             tenant_id=shared.tenant_id, client_id=shared.client_id,
         )
-        try:
-            kg_docs = search_svc.graph_search(
-                search_query, top_k=top_k, hop_limit=hop_limit,
-            )
-        except Exception as e:
-            logger.warning("KG retrieval failed: %s", e)
-            kg_docs = []
+
+        retrieval_queries = [
+            focus_query or "overall strategic summary",
+            "key themes and important topics",
+            "challenges problems and pain points",
+            "opportunities recommendations and next steps",
+        ]
+
+        kg_docs = []
+        seen_ids: set = set()
+        per_query_k = max(top_k // len(retrieval_queries), 5)
+
+        for rq in retrieval_queries:
+            try:
+                docs = search_svc.graph_search(
+                    rq, top_k=per_query_k, hop_limit=hop_limit,
+                )
+                for doc in docs:
+                    doc_id = id(doc)
+                    if doc_id not in seen_ids:
+                        seen_ids.add(doc_id)
+                        kg_docs.append(doc)
+            except Exception as e:
+                logger.warning("KG retrieval failed for query '%s': %s", rq, e)
 
         # Resolve document titles for KG chunks
         doc_titles = self._resolve_document_titles(kg_docs)
@@ -261,7 +275,7 @@ class StrategicAnalysisService(BaseAnalysisService):
         tenant_id: UUID,
         client_id: UUID,
         client_profile: Optional[Dict[str, Any]] = None,
-        top_k: int = 10,
+        top_k: int = 25,
         hop_limit: int = 1,
         web_search_queries: Optional[List[str]] = None,
         llm_model: str = LLMConfig.DEFAULT,
@@ -288,7 +302,7 @@ class StrategicAnalysisService(BaseAnalysisService):
         *,
         tenant_id: UUID,
         client_profile: Optional[Dict[str, Any]] = None,
-        top_k: int = 10,
+        top_k: int = 25,
         hop_limit: int = 1,
         web_search_queries: Optional[List[str]] = None,
         llm_model: str = LLMConfig.DEFAULT,
