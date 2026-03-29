@@ -469,7 +469,8 @@ def _run_spider_subprocess(url: str) -> JsonDict:
         with open(out_path, encoding="utf-8") as f:
             return json.load(f)
     except subprocess.CalledProcessError as e:
-        logger.error("Spider subprocess failed (exit code %d): %s", e.returncode, e.stderr.decode())
+        logger.error("Spider subprocess failed (exit code %d)\nstdout: %s\nstderr: %s",
+                      e.returncode, e.stdout[:2000] if e.stdout else "", e.stderr[:2000] if e.stderr else "")
         return {"source_url": url, "scraped_at": "", "total_pages": 0, "pages": []}
     except (json.JSONDecodeError, FileNotFoundError) as e:
         logger.error("Spider output unreadable: %s", e)
