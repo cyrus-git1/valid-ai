@@ -199,53 +199,50 @@ SCRAPY_TIMEOUT_SECONDS = 300  # 5 minutes
 # ── ScraperService (OOP wrapper) ─────────────────────────────────────────────
 
 class ScraperService:
-    """Unified web scraper: Scrapy first, Firecrawl fallback (on empty result or timeout)."""
+    """Unified web scraper: Firecrawl primary, Scrapy fallback."""
 
     @staticmethod
     def run_spider(url: str, output_file: str = "scraped_data.json") -> None:
         """
-        Run SiteSpider on a URL with a 5-minute timeout.
+        Scrape a URL using Firecrawl (primary) with Scrapy as fallback.
 
-        Falls back to Firecrawl if:
-          - Scrapy times out (> 5 min)
-          - Scrapy returns zero pages
-          - Scrapy subprocess crashes
+        Falls back to Scrapy if:
+          - FIRECRAWL_API_KEY is not set
+          - Firecrawl returns zero pages
+          - Firecrawl API call fails
         """
-        # Run Scrapy in a subprocess so we can enforce a wall-clock timeout.
-        # CrawlerProcess.start() blocks the event loop and has no timeout arg.
+        print(f"Starting Firecrawl scrape for {url}")
+
+        try:
+            _run_firecrawl_scraper(url, output_file)
+
+            # Verify Firecrawl produced content
+            if Path(output_file).exists():
+                with open(output_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("total_pages", 0) > 0:
+                    return
+
+            print("\nFirecrawl returned no pages -- falling back to Scrapy")
+        except Exception as e:
+            print(f"\nFirecrawl failed ({e}) -- falling back to Scrapy")
+
+        # Scrapy fallback
         script = Path(__file__).resolve()
         cmd = [sys.executable, str(script), url, output_file, "--scrapy-only"]
-
         print(f"Starting Scrapy scrape for {url} (timeout: {SCRAPY_TIMEOUT_SECONDS}s)")
 
         try:
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 timeout=SCRAPY_TIMEOUT_SECONDS,
                 capture_output=True,
                 text=True,
             )
-            # Check if Scrapy produced a non-empty result
-            scrapy_ok = False
-            if result.returncode == 0 and Path(output_file).exists():
-                with open(output_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if data.get("total_pages", 0) > 0:
-                    scrapy_ok = True
-                    print(f"\nScrapy scraped {data['total_pages']} pages and saved to {output_file}")
-                    print(f"  File is ready for tokenization")
-
-            if not scrapy_ok:
-                print("\nNo items were scraped with Scrapy -- trying Firecrawl fallback")
-                _run_firecrawl_scraper(url, output_file)
-
         except subprocess.TimeoutExpired:
-            print(f"\nScrapy timed out after {SCRAPY_TIMEOUT_SECONDS}s -- falling back to Firecrawl")
-            _run_firecrawl_scraper(url, output_file)
-
+            print(f"\nScrapy also timed out after {SCRAPY_TIMEOUT_SECONDS}s")
         except Exception as e:
-            print(f"\nScrapy subprocess failed ({e}) -- falling back to Firecrawl")
-            _run_firecrawl_scraper(url, output_file)
+            print(f"\nScrapy fallback also failed: {e}")
 
 
 # Module-level convenience for backward compat
