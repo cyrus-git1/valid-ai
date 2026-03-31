@@ -64,8 +64,9 @@ SURVEY_AGENT_SYSTEM_PROMPT = (
     "- Generate 5-15 questions depending on the scope\n"
     "- Use a DIVERSE MIX of question types from the allowed types listed below — "
     "do not rely only on simple types like multiple_choice and rating. "
-    "Actively consider interactive types like card_sort and ranking when the topic "
-    "involves categorization, prioritization, or grouping\n"
+    "Actively consider interactive types like card_sort, ranking, tree_testing, "
+    "and matrix when the topic involves categorization, prioritization, grouping, "
+    "navigation testing, or multi-dimensional evaluation\n"
     "- Questions MUST be informed by the context analysis — reference specific industry "
     "trends, organization characteristics, and content themes identified\n"
     "- Tailor vocabulary and complexity to the target persona\n"
@@ -138,6 +139,40 @@ QUESTION_TYPE_PROMPTS: Dict[str, str] = {
         "categorizing pain points by department, or mapping skills to proficiency tiers)\n"
         "- Card sort is especially valuable for understanding how respondents mentally "
         "organize information and for gathering categorization data\n"
+    ),
+    "tree_testing": (
+        "For tree_testing questions:\n"
+        "- Provide a \"task\" string that tells the respondent what to find "
+        "(e.g., \"Where would you find account settings?\")\n"
+        "- Provide a \"tree\" as a nested array of nodes. Each node has \"id\" (UUID4), "
+        "\"label\", and \"children\" (array of child nodes, may be empty)\n"
+        "- Build a realistic information-architecture tree with 2-4 top-level categories "
+        "and 1-3 levels of nesting\n"
+        "- Optionally provide \"correctPath\" as an array of node IDs tracing the ideal "
+        "path from root to the correct answer (may be empty if there is no single correct answer)\n"
+        "- Use tree_testing when you want to evaluate how easily users can navigate "
+        "a hierarchy to locate information — ideal for testing site navigation, menu "
+        "structures, or content organization\n"
+    ),
+    "matrix": (
+        "For matrix questions:\n"
+        "- Provide \"rows\" as an array of strings — the statements or items to rate\n"
+        "- Provide \"columns\" as an array of strings — the scale points or answer options\n"
+        "- Use 3-6 rows and 3-5 columns\n"
+        "- Use matrix when respondents need to evaluate multiple items on the same scale "
+        "(e.g., rating satisfaction across several service dimensions, agreement with "
+        "multiple statements, or importance of various features)\n"
+        "- Matrix questions reduce survey length by combining related items into one view\n"
+    ),
+    "sus": (
+        "For sus (System Usability Scale) questions:\n"
+        "- This is a standardized 10-question usability questionnaire — "
+        "no custom rows, columns, or options are needed\n"
+        "- Only provide \"id\", \"type\": \"sus\", \"label\", and \"required\"\n"
+        "- The label should describe what system or product is being evaluated "
+        "(e.g., \"System Usability Scale — [Product Name]\")\n"
+        "- Use sus when measuring perceived usability of a product, tool, or system\n"
+        "- Limit to ONE sus question per survey since it already contains 10 sub-statements\n"
     ),
 }
 
@@ -217,14 +252,46 @@ SURVEY_OUTPUT_FORMAT_PROMPT = (
     '  ],\n'
     '  "required": true\n'
     "}}\n\n"
+    "tree_testing:\n"
+    "{{\n"
+    '  "id": "<uuid4>", "type": "tree_testing",\n'
+    '  "label": "Find the item",\n'
+    '  "task": "Where would you find account settings?",\n'
+    '  "tree": [\n'
+    '    {{"id": "<uuid4>", "label": "Category 1", "children": [\n'
+    '      {{"id": "<uuid4>", "label": "Sub-item 1", "children": []}},\n'
+    '      {{"id": "<uuid4>", "label": "Sub-item 2", "children": []}}\n'
+    '    ]}},\n'
+    '    {{"id": "<uuid4>", "label": "Category 2", "children": [\n'
+    '      {{"id": "<uuid4>", "label": "Sub-item 3", "children": []}}\n'
+    '    ]}}\n'
+    '  ],\n'
+    '  "correctPath": [],\n'
+    '  "required": false\n'
+    "}}\n\n"
+    "matrix:\n"
+    "{{\n"
+    '  "id": "<uuid4>", "type": "matrix",\n'
+    '  "label": "Rate the following",\n'
+    '  "rows": ["Statement 1", "Statement 2", "Statement 3"],\n'
+    '  "columns": ["Strongly Disagree", "Disagree", "Neutral", "Agree", "Strongly Agree"],\n'
+    '  "required": false\n'
+    "}}\n\n"
+    "sus:\n"
+    "{{\n"
+    '  "id": "<uuid4>", "type": "sus",\n'
+    '  "label": "System Usability Scale",\n'
+    '  "required": false\n'
+    "}}\n\n"
     "Rules for the output:\n"
     '- Every "id" must be a valid UUID4 string (generate unique ones)\n'
     '- "type" must be one of: multiple_choice, checkbox, short_text, long_text, '
-    "rating, yes_no, nps, ranking, card_sort\n"
+    "rating, yes_no, nps, ranking, card_sort, tree_testing, matrix, sus\n"
     '- "label" is the question text\n'
     '- "required" is a boolean\n'
     "- Only include fields that belong to the question type (see schemas above)\n"
     "- For card_sort, every item and category must have its own unique UUID4 id\n"
+    "- For tree_testing, every tree node must have its own unique UUID4 id\n"
 )
 
 # ── Assembled generation prompt ─────────────────────────────────────────────
@@ -262,8 +329,9 @@ QUESTION_RECOMMENDATION_PROMPT = ChatPromptTemplate.from_messages([
         "- Complement (not duplicate) the existing questions\n"
         "- Follow up on interesting angles opened by current questions\n"
         "- Actively diversify question types — if the existing survey lacks interactive "
-        "types like card_sort or ranking, strongly prefer recommending those. "
-        "Card sort is ideal for any question involving categorization or grouping\n\n"
+        "types like card_sort, ranking, tree_testing, or matrix, strongly prefer "
+        "recommending those. Card sort is ideal for categorization, tree testing for "
+        "navigation findability, and matrix for multi-dimensional evaluation\n\n"
         "Return a JSON object with two keys:\n"
         "  \"reasoning\": a short paragraph explaining why these questions are recommended\n"
         "  \"questions\": a JSON array of question objects\n\n"

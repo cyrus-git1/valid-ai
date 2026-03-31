@@ -19,6 +19,12 @@ class CardSortItem(BaseModel):
     label: str
 
 
+class TreeNode(BaseModel):
+    id: str
+    label: str
+    children: List["TreeNode"] = Field(default_factory=list)
+
+
 class SurveyQuestionItem(BaseModel):
     id: str
     type: str
@@ -35,6 +41,13 @@ class SurveyQuestionItem(BaseModel):
     items: Optional[List[Any]] = None
     # card_sort
     categories: Optional[List[CardSortItem]] = None
+    # tree_testing
+    task: Optional[str] = None
+    tree: Optional[List[TreeNode]] = None
+    correctPath: Optional[List[str]] = None
+    # matrix
+    rows: Optional[List[str]] = None
+    columns: Optional[List[str]] = None
 
 
 # ── Generate survey ──────────────────────────────────────────────────────────
@@ -102,6 +115,13 @@ class CompletedSurveyQuestion(BaseModel):
     options: Optional[List[str]] = None
     items: Optional[List[Any]] = None
     categories: Optional[List[CardSortItem]] = None
+    # tree_testing
+    task: Optional[str] = None
+    tree: Optional[List[TreeNode]] = None
+    correctPath: Optional[List[str]] = None
+    # matrix
+    rows: Optional[List[str]] = None
+    columns: Optional[List[str]] = None
     response_summary: Optional[str] = Field(
         default=None,
         description="Aggregated/summary of responses for this question (e.g. '60% said Yes')",

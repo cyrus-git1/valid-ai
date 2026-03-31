@@ -295,50 +295,7 @@ def validate_output(state: SurveyState) -> SurveyState:
         return {**state, "error": "Survey output is not a JSON array", "status": "parse_error"}
 
     # Normalize each question to the required schema per type
-    normalized = []
-    for q in survey_data:
-        qtype = q.get("type", "multiple_choice")
-        base = {
-            "id": q.get("id") if _is_valid_uuid(q.get("id")) else str(uuid.uuid4()),
-            "type": qtype,
-            "label": q.get("label") or q.get("text", ""),
-            "required": bool(q.get("required", False)),
-        }
-
-        if qtype in ("multiple_choice", "checkbox"):
-            base["options"] = q.get("options", [])
-
-        elif qtype == "rating":
-            base["min"] = q.get("min", 1)
-            base["max"] = q.get("max", 5)
-            base["lowLabel"] = q.get("lowLabel", "Poor")
-            base["highLabel"] = q.get("highLabel", "Excellent")
-
-        elif qtype == "ranking":
-            base["items"] = q.get("items", [])
-
-        elif qtype == "card_sort":
-            # Ensure every item and category has a valid UUID id
-            items = q.get("items", [])
-            base["items"] = [
-                {
-                    "id": item.get("id") if _is_valid_uuid(item.get("id")) else str(uuid.uuid4()),
-                    "label": item.get("label", ""),
-                }
-                for item in items
-            ]
-            categories = q.get("categories", [])
-            base["categories"] = [
-                {
-                    "id": cat.get("id") if _is_valid_uuid(cat.get("id")) else str(uuid.uuid4()),
-                    "label": cat.get("label", ""),
-                }
-                for cat in categories
-            ]
-
-        # short_text, long_text, yes_no, nps — no extra fields needed
-
-        normalized.append(base)
+    normalized = [_normalize_question(q) for q in survey_data]
 
     return {
         **state,
@@ -367,6 +324,74 @@ def _is_valid_uuid(val: Any) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _normalize_tree_nodes(nodes: list) -> list:
+    """Recursively normalize tree nodes, ensuring each has a valid UUID."""
+    normalized = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        normalized.append({
+            "id": node.get("id") if _is_valid_uuid(node.get("id")) else str(uuid.uuid4()),
+            "label": node.get("label", ""),
+            "children": _normalize_tree_nodes(node.get("children", [])),
+        })
+    return normalized
+
+
+def _normalize_question(q: dict) -> dict:
+    """Normalize a single question dict to the required schema for its type."""
+    qtype = q.get("type", "multiple_choice")
+    base: Dict[str, Any] = {
+        "id": q.get("id") if _is_valid_uuid(q.get("id")) else str(uuid.uuid4()),
+        "type": qtype,
+        "label": q.get("label") or q.get("text", ""),
+        "required": bool(q.get("required", False)),
+    }
+
+    if qtype in ("multiple_choice", "checkbox"):
+        base["options"] = q.get("options", [])
+
+    elif qtype == "rating":
+        base["min"] = q.get("min", 1)
+        base["max"] = q.get("max", 5)
+        base["lowLabel"] = q.get("lowLabel", "Poor")
+        base["highLabel"] = q.get("highLabel", "Excellent")
+
+    elif qtype == "ranking":
+        base["items"] = q.get("items", [])
+
+    elif qtype == "card_sort":
+        items = q.get("items", [])
+        base["items"] = [
+            {
+                "id": it.get("id") if _is_valid_uuid(it.get("id")) else str(uuid.uuid4()),
+                "label": it.get("label", ""),
+            }
+            for it in items
+        ]
+        categories = q.get("categories", [])
+        base["categories"] = [
+            {
+                "id": cat.get("id") if _is_valid_uuid(cat.get("id")) else str(uuid.uuid4()),
+                "label": cat.get("label", ""),
+            }
+            for cat in categories
+        ]
+
+    elif qtype == "tree_testing":
+        base["task"] = q.get("task", "")
+        base["tree"] = _normalize_tree_nodes(q.get("tree", []))
+        base["correctPath"] = q.get("correctPath", [])
+
+    elif qtype == "matrix":
+        base["rows"] = q.get("rows", [])
+        base["columns"] = q.get("columns", [])
+
+    # short_text, long_text, yes_no, nps, sus — no extra fields needed
+
+    return base
 
 
 # ── Routing ──────────────────────────────────────────────────────────────────
@@ -635,36 +660,7 @@ def _parse_recommendation_output(
         questions_raw = data
 
     # Normalise questions (assign UUIDs, enforce schema)
-    normalized = []
-    for q in questions_raw:
-        qtype = q.get("type", "multiple_choice")
-        base: Dict[str, Any] = {
-            "id": q.get("id") if _is_valid_uuid(q.get("id")) else str(uuid.uuid4()),
-            "type": qtype,
-            "label": q.get("label") or q.get("text", ""),
-            "required": bool(q.get("required", False)),
-        }
-        if qtype in ("multiple_choice", "checkbox"):
-            base["options"] = q.get("options", [])
-        elif qtype == "rating":
-            base["min"] = q.get("min", 1)
-            base["max"] = q.get("max", 5)
-            base["lowLabel"] = q.get("lowLabel", "Poor")
-            base["highLabel"] = q.get("highLabel", "Excellent")
-        elif qtype == "ranking":
-            base["items"] = q.get("items", [])
-        elif qtype == "card_sort":
-            items = q.get("items", [])
-            base["items"] = [
-                {"id": it.get("id") if _is_valid_uuid(it.get("id")) else str(uuid.uuid4()), "label": it.get("label", "")}
-                for it in items
-            ]
-            categories = q.get("categories", [])
-            base["categories"] = [
-                {"id": cat.get("id") if _is_valid_uuid(cat.get("id")) else str(uuid.uuid4()), "label": cat.get("label", "")}
-                for cat in categories
-            ]
-        normalized.append(base)
+    normalized = [_normalize_question(q) for q in questions_raw]
 
     return {key: normalized, "reasoning": reasoning, "status": "complete", "error": None}
 
@@ -947,36 +943,7 @@ def generate_whole_survey(
         questions_raw = []
 
     # Normalize questions
-    normalized = []
-    for q in questions_raw:
-        qtype = q.get("type", "multiple_choice")
-        base: Dict[str, Any] = {
-            "id": q.get("id") if _is_valid_uuid(q.get("id")) else str(uuid.uuid4()),
-            "type": qtype,
-            "label": q.get("label") or q.get("text", ""),
-            "required": bool(q.get("required", False)),
-        }
-        if qtype in ("multiple_choice", "checkbox"):
-            base["options"] = q.get("options", [])
-        elif qtype == "rating":
-            base["min"] = q.get("min", 1)
-            base["max"] = q.get("max", 5)
-            base["lowLabel"] = q.get("lowLabel", "Poor")
-            base["highLabel"] = q.get("highLabel", "Excellent")
-        elif qtype == "ranking":
-            base["items"] = q.get("items", [])
-        elif qtype == "card_sort":
-            items = q.get("items", [])
-            base["items"] = [
-                {"id": it.get("id") if _is_valid_uuid(it.get("id")) else str(uuid.uuid4()), "label": it.get("label", "")}
-                for it in items
-            ]
-            categories = q.get("categories", [])
-            base["categories"] = [
-                {"id": cat.get("id") if _is_valid_uuid(cat.get("id")) else str(uuid.uuid4()), "label": cat.get("label", "")}
-                for cat in categories
-            ]
-        normalized.append(base)
+    normalized = [_normalize_question(q) for q in questions_raw]
 
     # ── build questions section for title/description ──
     questions_section = _build_questions_section(normalized)
