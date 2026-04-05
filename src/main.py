@@ -1,15 +1,17 @@
 """
 main.py
 -------
-FastAPI application entrypoint.
+Core API — data plane.
 
-Registers all routers and configures CORS, logging, and startup checks.
+Owns the database (Supabase). Handles ingestion, documents, KG, search,
+context summaries, and panel participants.
+
+Separate services:
+  - valid-transcription (port 8001): audio/video transcription
+  - valid-agents (port 8003): agents, surveys, analysis, enrichment
 
 Run with:
-    uvicorn main:app --reload --port 8000
-
-Swagger UI: http://localhost:8000/docs
-ReDoc:      http://localhost:8000/redoc
+    uvicorn src.main:app --reload --port 8000
 """
 from __future__ import annotations
 
@@ -32,27 +34,16 @@ from src.routers.ingest_router import router as ingest_router
 from src.routers.documents_router import router as documents_router
 from src.routers.admin_router import router as admin_router
 from src.routers.context_router import router as context_router
-from src.routers.survey_router import router as survey_router
-from src.routers.strategic_analysis_router import router as strategic_analysis_router
-from src.routers.sentiment_router import router as sentiment_router
-from src.routers.transcript_insights_router import router as transcript_insights_router
-from src.routers.confidence_interval_router import router as confidence_interval_router
 from src.routers.search_router import router as search_router
-from src.routers.transcription_router import router as transcription_router
 from src.routers.panel_participant_router import router as panel_participant_router
+from src.routers.data_router import router as data_router
 
 app = FastAPI(
-    title="Knowledge Graph RAG API",
-    description=(
-        "Ingest PDFs, DOCX files, and websites into a Supabase-backed "
-        "Knowledge Graph, then query it with vector search, graph expansion, "
-        "and LLM-powered question answering."
-    ),
-    version="1.0.0",
+    title="Valid Core API",
+    description="Data plane: ingestion, KG, search, context, documents, panel participants.",
+    version="3.0.0",
 )
 
-# ── CORS ─────────────────────────────────────────────────────────────────────
-# Tighten allowed_origins in production
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
@@ -62,23 +53,20 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(ingest_router)      # POST /ingest/file, POST /ingest/web
-app.include_router(documents_router)   # GET/PATCH/DELETE /documents
-app.include_router(admin_router)       # GET /admin/health, /admin/stats, POST /admin/reindex
-app.include_router(context_router)     # POST /context/build, GET /context/status, /context/summary/*
-app.include_router(survey_router)      # POST /survey/generate  (direct — no classification)
-app.include_router(strategic_analysis_router)  # POST /strategic-analysis/generate
-app.include_router(sentiment_router)           # POST /sentiment-analysis/generate
-app.include_router(transcript_insights_router) # POST /transcript-insights/generate
-app.include_router(confidence_interval_router)  # POST /confidence-interval/compute
-app.include_router(search_router)                # POST /search/semantic, /search/graph, /search/ask
-app.include_router(transcription_router)         # POST /transcription/generate
-app.include_router(panel_participant_router)      # POST /panel/ingest, /panel/filter
+app.include_router(ingest_router)              # POST /ingest/file, POST /ingest/web
+app.include_router(documents_router)           # GET/PATCH/DELETE /documents
+app.include_router(admin_router)               # GET /admin/health, /admin/stats
+app.include_router(context_router)             # POST /context/build, GET /context/summary/*
+app.include_router(search_router)              # POST /search/semantic, /search/graph, /search/ask
+app.include_router(panel_participant_router)    # POST /panel/ingest, /panel/filter
+app.include_router(data_router)                # GET /data/* (for agent service)
+
 
 @app.get("/", tags=["root"])
 def root():
     return {
-        "service": "Knowledge Graph RAG API",
+        "service": "Valid Core API",
+        "version": "3.0.0",
         "docs": "/docs",
         "health": "/admin/health",
     }

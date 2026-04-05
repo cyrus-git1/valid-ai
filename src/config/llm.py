@@ -42,6 +42,8 @@ class LLMConfig:
 
     # Agents
     ROUTER: str             = os.environ.get("LLM_ROUTER",             DEFAULT)
+    PERSONA: str            = os.environ.get("LLM_PERSONA",            DEFAULT)
+    ENRICHMENT: str         = os.environ.get("LLM_ENRICHMENT",         DEFAULT)
 
     # ── Default temperatures ─────────────────────────────────────────────────
 
@@ -65,6 +67,8 @@ _ROLE_MAP: dict[str, tuple[str, float]] = {
     "follow_up":          (LLMConfig.FOLLOW_UP,          LLMConfig.Temp.CREATIVE),
     "rag_answer":         (LLMConfig.RAG_ANSWER,         LLMConfig.Temp.PRECISE),
     "router":             (LLMConfig.ROUTER,             LLMConfig.Temp.ROUTING),
+    "persona":            (LLMConfig.PERSONA,            LLMConfig.Temp.ANALYSIS),
+    "enrichment":         (LLMConfig.ENRICHMENT,         LLMConfig.Temp.ANALYSIS),
 }
 
 
