@@ -1,11 +1,12 @@
 """
 /search router
 --------------
-Query-time endpoints. Three tiers of retrieval, each building on the previous.
+Query-time endpoints. Vector search over the KG.
 
 POST /search/semantic  — Pure vector search over kg_nodes via pgvector
 POST /search/graph     — Vector search + one-hop edge expansion (graph RAG)
-POST /search/ask       — Full RAG: graph retrieval + LLM answer generation
+
+The /search/ask endpoint (full RAG with LLM) has moved to the agent service.
 """
 from __future__ import annotations
 
@@ -15,8 +16,6 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 
 from src.models.api.search import (
-    AskRequest,
-    AskResponse,
     GraphSearchRequest,
     GraphSearchResponse,
     SemanticSearchRequest,
@@ -37,6 +36,7 @@ def _docs_to_result_items(docs) -> List[SearchResultItem]:
             node_id=m.get("node_id", ""),
             node_key=m.get("node_key", ""),
             node_type=m.get("node_type", ""),
+            entity_type=m.get("entity_type"),
             content=doc.page_content,
             similarity_score=m.get("similarity_score"),
             document_id=m.get("document_id"),
@@ -52,19 +52,11 @@ def _docs_to_result_items(docs) -> List[SearchResultItem]:
 
 @router.post("/semantic", response_model=SemanticSearchResponse)
 def semantic_search(req: SemanticSearchRequest) -> SemanticSearchResponse:
-    """
-    Pure vector similarity search over KG nodes.
-
-    Embeds the query with OpenAI, finds the top-k most similar chunk nodes
-    using the pgvector HNSW index on kg_nodes.embedding.
-
-    Fast and cheap. Use this for simple lookups.
-    No graph traversal — only direct embedding similarity.
-    """
+    """Pure vector similarity search over KG nodes."""
     svc = SearchService(tenant_id=req.tenant_id, client_id=req.client_id)
 
     try:
-        docs = svc.semantic_search(req.query, top_k=req.top_k)
+        docs = svc.semantic_search(req.query, top_k=req.top_k, node_types=req.node_types)
     except Exception as e:
         logger.exception("Semantic search failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -77,16 +69,7 @@ def semantic_search(req: SemanticSearchRequest) -> SemanticSearchResponse:
 
 @router.post("/graph", response_model=GraphSearchResponse)
 def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
-    """
-    Vector search + graph expansion retrieval.
-
-    Step 1 — embed query and find top-k similar chunk nodes (seeds).
-    Step 2 — for each seed, follow outgoing KG edges (cosine similarity >=
-             min_edge_weight) and pull in neighbouring nodes.
-
-    The graph expansion surfaces related chunks that might not be individually
-    close to the query but are structurally connected to chunks that are.
-    """
+    """Vector search + graph expansion retrieval."""
     svc = SearchService(tenant_id=req.tenant_id, client_id=req.client_id)
 
     try:
@@ -96,6 +79,8 @@ def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
             hop_limit=req.hop_limit,
             max_neighbours=req.max_neighbours,
             min_edge_weight=req.min_edge_weight,
+            node_types=req.node_types,
+            rel_types=req.rel_types,
         )
     except Exception as e:
         logger.exception("Graph search failed")
@@ -109,39 +94,4 @@ def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
         results=_docs_to_result_items(docs),
         seed_nodes=seed_count,
         expanded_nodes=expanded_count,
-    )
-
-
-@router.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest) -> AskResponse:
-    """
-    Full RAG pipeline: graph retrieval + LLM answer generation.
-
-    Step 1 — graph-expanded retrieval (same as /search/graph)
-    Step 2 — concatenate retrieved chunk texts as context
-    Step 3 — prompt GPT-4o-mini (or configured model) to answer from context only
-
-    Returns the answer plus the source chunks used to generate it,
-    so callers can show citations.
-    """
-    svc = SearchService(
-        tenant_id=req.tenant_id,
-        client_id=req.client_id,
-        llm_model=req.model,
-    )
-
-    try:
-        answer, docs = svc.ask(
-            req.question,
-            top_k=req.top_k,
-            hop_limit=req.hop_limit,
-        )
-    except Exception as e:
-        logger.exception("RAG pipeline failed in /ask")
-        raise HTTPException(status_code=500, detail=f"RAG failed: {e}")
-
-    return AskResponse(
-        question=req.question,
-        answer=answer,
-        sources=_docs_to_result_items(docs),
     )

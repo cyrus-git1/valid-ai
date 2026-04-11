@@ -3,8 +3,8 @@
 -------------
 Data endpoints for the agent service to consume.
 
-Provides read access to transcript chunks, document titles, and survey outputs,
-plus write access for persisting survey outputs.
+Provides read access to transcript chunks, document titles, survey outputs,
+and context summaries, plus write access for persisting survey outputs.
 
 These endpoints exist so the agent service (valid-agents) can access
 data without direct Supabase access.
@@ -105,6 +105,37 @@ def get_document_titles(req: DocumentTitlesRequest) -> DocumentTitlesResponse:
 # ── Survey outputs ───────────────────────────────────────────────────────────
 
 
+class SurveyOutputsResponse(BaseModel):
+    outputs: List[Dict[str, Any]]
+
+
+@router.get("/survey-outputs", response_model=SurveyOutputsResponse)
+def get_survey_outputs(
+    tenant_id: UUID = Query(...),
+    client_id: UUID = Query(...),
+    output_type: Optional[str] = Query(default=None),
+    limit: int = Query(default=5, ge=1, le=50),
+) -> SurveyOutputsResponse:
+    """Fetch prior survey outputs for a tenant+client."""
+    sb = get_supabase()
+    try:
+        q = (
+            sb.table("survey_outputs")
+            .select("*")
+            .eq("tenant_id", str(tenant_id))
+            .eq("client_id", str(client_id))
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if output_type:
+            q = q.eq("output_type", output_type)
+        res = q.execute()
+        return SurveyOutputsResponse(outputs=res.data or [])
+    except Exception as e:
+        logger.exception("Failed to fetch survey outputs")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class SaveSurveyOutputRequest(BaseModel):
     tenant_id: UUID
     client_id: UUID
@@ -143,3 +174,59 @@ def save_survey_output(req: SaveSurveyOutputRequest) -> SaveSurveyOutputResponse
         raise HTTPException(status_code=500, detail=str(e))
 
     return SaveSurveyOutputResponse()
+
+
+# ── Context summary ────────────────────────────────────────────────────────
+
+
+class ContextSummaryReadResponse(BaseModel):
+    id: Optional[str] = None
+    tenant_id: str
+    client_id: str
+    summary: str
+    topics: List[Any] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    source_stats: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@router.get("/context/summary/get", response_model=ContextSummaryReadResponse)
+def get_context_summary(
+    tenant_id: UUID = Query(...),
+    client_id: UUID = Query(...),
+) -> ContextSummaryReadResponse:
+    """Fetch the stored context summary for a tenant+client."""
+    sb = get_supabase()
+    try:
+        res = (
+            sb.table("context_summaries")
+            .select("*")
+            .eq("tenant_id", str(tenant_id))
+            .eq("client_id", str(client_id))
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No context summary found for tenant={tenant_id}, client={client_id}.",
+            )
+        row = rows[0]
+        return ContextSummaryReadResponse(
+            id=row.get("id"),
+            tenant_id=row["tenant_id"],
+            client_id=row["client_id"],
+            summary=row.get("summary", ""),
+            topics=row.get("topics") or [],
+            metadata=row.get("metadata") or {},
+            source_stats=row.get("source_stats") or {},
+            created_at=row.get("created_at"),
+            updated_at=row.get("updated_at"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to fetch context summary")
+        raise HTTPException(status_code=500, detail=str(e))

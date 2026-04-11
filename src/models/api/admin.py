@@ -1,12 +1,9 @@
 """Pydantic models for the /admin router."""
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
-from uuid import UUID
+from typing import Optional
 
 from pydantic import BaseModel
-
-from src.models.base import TenantScoped
 
 
 class HealthResponse(BaseModel):
@@ -24,26 +21,3 @@ class StatsResponse(BaseModel):
     chunks_with_embeddings: int
     kg_node_count: int
     kg_edge_count: int
-
-
-class ReindexRequest(TenantScoped):
-    embed_model: str = "text-embedding-3-small"
-    embed_batch_size: int = 64
-
-
-class ReindexResponse(BaseModel):
-    document_id: str
-    chunks_upserted: int
-    warnings: list
-
-
-class RebuildKGRequest(TenantScoped):
-    similarity_threshold: float = 0.82
-    max_edges_per_chunk: int = 10
-    batch_size: int = 500
-
-
-class RebuildKGResponse(BaseModel):
-    nodes_upserted: int
-    edges_upserted: int
-    chunks_processed: int

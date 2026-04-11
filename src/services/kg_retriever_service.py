@@ -84,6 +84,9 @@ class KGRetrieverService(BaseRetriever):
 
     embed_model: str = "text-embedding-3-small"
 
+    node_types: Optional[List[str]] = Field(default=None, description="Filter vector search to these node types (e.g. ['Entity', 'Chunk'])")
+    rel_types: Optional[List[str]] = Field(default=None, description="Filter edge traversal to these rel_types (e.g. ['mentions', 'co_occurs'])")
+
     # ── Private clients ───────────────────────────────────────────────────────
     _sb: Optional[Client] = None
     _embeddings: Optional[OpenAIEmbeddings] = None
@@ -115,15 +118,15 @@ class KGRetrieverService(BaseRetriever):
         Returns rows with: id, node_key, name, description, properties, type, similarity
         """
         try:
-            res = self._sb.rpc(
-                "search_kg_nodes",
-                {
-                    "p_tenant_id": str(self.tenant_id),
-                    "p_client_id": str(self.client_id),
-                    "p_embedding": embedding,
-                    "p_top_k": self.top_k,
-                },
-            ).execute()
+            params = {
+                "p_tenant_id": str(self.tenant_id),
+                "p_client_id": str(self.client_id),
+                "p_embedding": embedding,
+                "p_top_k": self.top_k,
+            }
+            if self.node_types:
+                params["p_types"] = self.node_types
+            res = self._sb.rpc("search_kg_nodes", params).execute()
             return res.data or []
         except Exception as e:
             logger.error("search_kg_nodes RPC failed: %s", e)
@@ -132,9 +135,11 @@ class KGRetrieverService(BaseRetriever):
     # ── Graph expansion ───────────────────────────────────────────────────────
 
     def _get_neighbour_ids(self, node_id: str) -> List[str]:
-        """Fetch outgoing edge targets above min_edge_weight, ordered by weight desc."""
+        """Fetch connected nodes via both outgoing and incoming edges above min_edge_weight."""
+        neighbours: List[str] = []
         try:
-            res = (
+            # Outgoing edges (src_id = this node)
+            out_q = (
                 self._sb.table("kg_edges")
                 .select("dst_id, weight")
                 .eq("tenant_id", str(self.tenant_id))
@@ -142,14 +147,37 @@ class KGRetrieverService(BaseRetriever):
                 .eq("src_id", node_id)
                 .eq("is_active", True)
                 .gte("weight", self.min_edge_weight)
-                .order("weight", desc=True)
-                .limit(self.max_neighbours)
-                .execute()
             )
-            return [row["dst_id"] for row in (res.data or [])]
+            if self.rel_types:
+                out_q = out_q.in_("rel_type", self.rel_types)
+            out_res = out_q.order("weight", desc=True).limit(self.max_neighbours).execute()
+            neighbours.extend(row["dst_id"] for row in (out_res.data or []))
+
+            # Incoming edges (dst_id = this node) — e.g. chunk→entity "mentions" edges
+            in_q = (
+                self._sb.table("kg_edges")
+                .select("src_id, weight")
+                .eq("tenant_id", str(self.tenant_id))
+                .eq("client_id", str(self.client_id))
+                .eq("dst_id", node_id)
+                .eq("is_active", True)
+                .gte("weight", self.min_edge_weight)
+            )
+            if self.rel_types:
+                in_q = in_q.in_("rel_type", self.rel_types)
+            in_res = in_q.order("weight", desc=True).limit(self.max_neighbours).execute()
+            neighbours.extend(row["src_id"] for row in (in_res.data or []))
         except Exception as e:
             logger.error("Edge fetch failed for node %s: %s", node_id, e)
-            return []
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique: List[str] = []
+        for nid in neighbours:
+            if nid not in seen:
+                seen.add(nid)
+                unique.append(nid)
+        return unique[:self.max_neighbours]
 
     def _fetch_nodes_by_ids(self, node_ids: List[str]) -> List[JsonDict]:
         """Batch fetch active node rows by ID list."""
@@ -221,11 +249,8 @@ class KGRetrieverService(BaseRetriever):
     ) -> Document:
         props = node.get("properties") or {}
         chunk_id = props.get("chunk_id")
-
-        content = (self._get_chunk_content(chunk_id) if chunk_id else None) \
-            or node.get("description") \
-            or node.get("name") \
-            or ""
+        node_type = node.get("type", "")
+        entity_type = props.get("entity_type")
 
         # Fetch evidence for richer context
         node_id = node.get("id", "")
@@ -233,10 +258,32 @@ class KGRetrieverService(BaseRetriever):
         evidence_quote = evidence_rows[0]["quote"] if evidence_rows else None
         evidence_score = evidence_rows[0]["score"] if evidence_rows else None
 
+        # Compose content based on node type
+        if entity_type and not chunk_id:
+            # Entity node — compose from name + description + evidence quotes
+            parts = [f"{entity_type}: {node.get('name', '')}"]
+            desc = node.get("description")
+            if desc and desc != f"{entity_type}: {node.get('name', '')}":
+                parts.append(desc)
+            if evidence_rows:
+                parts.append("\nEvidence:")
+                for ev in evidence_rows:
+                    quote = ev.get("quote", "").strip()
+                    if quote:
+                        parts.append(f"- {quote}")
+            content = "\n".join(parts)
+        else:
+            # Chunk node — fetch full text from chunks table
+            content = (self._get_chunk_content(chunk_id) if chunk_id else None) \
+                or node.get("description") \
+                or node.get("name") \
+                or ""
+
         metadata: JsonDict = {
             "node_id": node_id,
             "node_key": node.get("node_key"),
-            "node_type": node.get("type"),
+            "node_type": node_type,
+            "entity_type": entity_type,
             "document_id": props.get("document_id"),
             "chunk_id": chunk_id,
             "chunk_index": props.get("chunk_index"),

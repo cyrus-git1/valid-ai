@@ -1,6 +1,4 @@
-# Python Dependencies
-
-# Core API
+# Core API (Data Plane)
 fastapi
 uvicorn[standard]
 python-dotenv
@@ -11,24 +9,11 @@ supabase
 numpy
 scipy
 
-# LLM & Embeddings
+# Search (KGRetrieverService)
 openai
 langchain-core
 langchain-openai
-langgraph
 
-# Document Processing
-PyMuPDF
-spacy
-tiktoken
-python-docx
-python-multipart
-pandas
-openpyxl
-
-# Web Scraping
-scrapy
-trafilatura
+# HTTP client
 requests
 httpx
-firecrawl-py

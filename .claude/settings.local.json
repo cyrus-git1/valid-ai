@@ -84,7 +84,9 @@
       "Bash(git config:*)",
       "Bash(git -C /c/Users/cyrus/Valid remote -v)",
       "Bash(git remote:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(find /c/Users/cyrus/Valid/services -type f -name *.py)",
+      "Bash(wc -l /c/Users/cyrus/Valid/src/**/*.py)"
     ]
   }
 }

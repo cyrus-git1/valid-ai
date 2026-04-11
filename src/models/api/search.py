@@ -6,13 +6,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from src.config.llm import LLMConfig
 from src.models.base import TenantScoped
 
 
 class SemanticSearchRequest(TenantScoped):
     query: str
     top_k: int = Field(default=5, ge=1, le=50)
+    node_types: Optional[List[str]] = Field(default=None, description="Filter to these node types (e.g. ['Entity', 'Chunk'])")
 
 
 class GraphSearchRequest(TenantScoped):
@@ -21,24 +21,20 @@ class GraphSearchRequest(TenantScoped):
     hop_limit: int = Field(default=1, ge=0, le=2)
     max_neighbours: int = Field(default=3, ge=1, le=10)
     min_edge_weight: float = Field(default=0.75, ge=0.0, le=1.0)
-
-
-class AskRequest(TenantScoped):
-    question: str
-    top_k: int = Field(default=5, ge=1, le=20)
-    hop_limit: int = Field(default=1, ge=0, le=2)
-    model: str = LLMConfig.DEFAULT
+    node_types: Optional[List[str]] = Field(default=None, description="Filter to these node types (e.g. ['Entity', 'Chunk'])")
+    rel_types: Optional[List[str]] = Field(default=None, description="Filter edge traversal to these rel_types (e.g. ['mentions'])")
 
 
 class SearchResultItem(BaseModel):
     node_id: str
     node_key: str
     node_type: str
-    content: str                    # description / chunk text preview
+    entity_type: Optional[str] = None
+    content: str
     similarity_score: Optional[float]
     document_id: Optional[str]
     chunk_index: Optional[int]
-    source: str = "vector"          # "vector" | "graph_expansion"
+    source: str = "vector"
     retrieval_reason: Optional[str] = None
     evidence_quote: Optional[str] = None
     evidence_score: Optional[float] = None
@@ -55,9 +51,3 @@ class GraphSearchResponse(BaseModel):
     results: List[SearchResultItem]
     seed_nodes: int
     expanded_nodes: int
-
-
-class AskResponse(BaseModel):
-    question: str
-    answer: str
-    sources: List[SearchResultItem]

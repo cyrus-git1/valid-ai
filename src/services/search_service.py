@@ -68,6 +68,8 @@ class SearchService:
         hop_limit: int,
         max_neighbours: int = 3,
         min_edge_weight: float = 0.75,
+        node_types: Optional[List[str]] = None,
+        rel_types: Optional[List[str]] = None,
     ) -> KGRetrieverService:
         return KGRetrieverService(
             supabase_url=self._sb_url,
@@ -80,15 +82,18 @@ class SearchService:
             max_neighbours=max_neighbours,
             min_edge_weight=min_edge_weight,
             embed_model=self._embed_model,
+            node_types=node_types,
+            rel_types=rel_types,
         )
 
     def semantic_search(
         self,
         query: str,
         top_k: int = 5,
+        node_types: Optional[List[str]] = None,
     ) -> List[Document]:
         """Pure vector search — no graph expansion."""
-        retriever = self._build_retriever(top_k=top_k, hop_limit=0)
+        retriever = self._build_retriever(top_k=top_k, hop_limit=0, node_types=node_types)
         return retriever.invoke(query)
 
     def graph_search(
@@ -98,6 +103,8 @@ class SearchService:
         hop_limit: int = 1,
         max_neighbours: int = 3,
         min_edge_weight: float = 0.75,
+        node_types: Optional[List[str]] = None,
+        rel_types: Optional[List[str]] = None,
     ) -> List[Document]:
         """Vector search + graph expansion."""
         retriever = self._build_retriever(
@@ -105,6 +112,8 @@ class SearchService:
             hop_limit=hop_limit,
             max_neighbours=max_neighbours,
             min_edge_weight=min_edge_weight,
+            node_types=node_types,
+            rel_types=rel_types,
         )
         return retriever.invoke(query)
 
