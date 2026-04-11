@@ -118,15 +118,13 @@ class KGRetrieverService(BaseRetriever):
         Returns rows with: id, node_key, name, description, properties, type, similarity
         """
         try:
-            params = {
+            res = self._sb.rpc("search_kg_nodes", {
                 "p_tenant_id": str(self.tenant_id),
                 "p_client_id": str(self.client_id),
                 "p_embedding": embedding,
                 "p_top_k": self.top_k,
-            }
-            if self.node_types:
-                params["p_types"] = self.node_types
-            res = self._sb.rpc("search_kg_nodes", params).execute()
+                "p_types": self.node_types,  # None = all types
+            }).execute()
             return res.data or []
         except Exception as e:
             logger.error("search_kg_nodes RPC failed: %s", e)
