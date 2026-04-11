@@ -34,6 +34,7 @@ from src.routers.documents_router import router as documents_router
 from src.routers.admin_router import router as admin_router
 from src.routers.search_router import router as search_router
 from src.routers.data_router import router as data_router
+from src.routers.ingest_router import router as ingest_router
 
 app = FastAPI(
     title="Valid Data Plane",
@@ -54,6 +55,7 @@ app.include_router(documents_router)           # GET/DELETE /documents
 app.include_router(admin_router)               # GET /admin/health, /admin/stats
 app.include_router(search_router)              # POST /search/semantic, /search/graph
 app.include_router(data_router)                # GET /data/* (for agent service)
+app.include_router(ingest_router)              # POST /ingest/processed, /ingest/processed-web
 
 
 @app.get("/", tags=["root"])

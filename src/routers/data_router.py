@@ -191,6 +191,39 @@ class ContextSummaryReadResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
+class ContextSummaryUpsertRequest(BaseModel):
+    tenant_id: UUID
+    client_id: UUID
+    summary: str
+    topics: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    source_stats: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextSummaryUpsertResponse(BaseModel):
+    id: str
+    status: str = "ok"
+
+
+@router.post("/context/summary/upsert", response_model=ContextSummaryUpsertResponse)
+def upsert_context_summary(req: ContextSummaryUpsertRequest) -> ContextSummaryUpsertResponse:
+    """Store or update a context summary for a tenant+client."""
+    sb = get_supabase()
+    try:
+        res = sb.rpc("upsert_context_summary", {
+            "p_tenant_id": str(req.tenant_id),
+            "p_client_id": str(req.client_id),
+            "p_summary": req.summary,
+            "p_topics": req.topics,
+            "p_metadata": req.metadata,
+            "p_source_stats": req.source_stats,
+        }).execute()
+        return ContextSummaryUpsertResponse(id=str(res.data))
+    except Exception as e:
+        logger.exception("Failed to upsert context summary")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/context/summary/get", response_model=ContextSummaryReadResponse)
 def get_context_summary(
     tenant_id: UUID = Query(...),
