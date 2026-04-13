@@ -78,7 +78,7 @@ class KGRetrieverService(BaseRetriever):
     client_id: UUID
 
     top_k: int = Field(default=5, description="Seed nodes from vector search")
-    hop_limit: int = Field(default=1, description="Graph expansion hops (0 = vector only)")
+    hop_limit: int = Field(default=2, description="Graph expansion hops (0 = vector only, 2 = entity bridging)")
     max_neighbours: int = Field(default=3, description="Max neighbours pulled per seed node")
     min_edge_weight: float = Field(default=0.75, description="Min edge weight to follow")
 
@@ -322,10 +322,13 @@ class KGRetrieverService(BaseRetriever):
 
         1. Embed query
         2. Vector search → seed nodes
-        3. Graph expansion per seed (if hop_limit >= 1)
+        3. Multi-hop graph expansion (up to hop_limit hops)
+           - Hop 1: seed → neighbors (similar chunks + entities)
+           - Hop 2: neighbors → their neighbors (entity bridging:
+             chunk → entity → other chunks mentioning same entity)
         4. Deduplicate → Documents
         """
-        logger.debug("Retrieving for query: %r", query[:80])
+        logger.debug("Retrieving for query: %r (hop_limit=%d)", query[:80], self.hop_limit)
 
         embedding = self._embed_query(query)
         seed_nodes = self._vector_search(embedding)
@@ -334,6 +337,7 @@ class KGRetrieverService(BaseRetriever):
         seen_ids: set[str] = set()
         documents: List[Document] = []
 
+        # Add seed nodes
         for node in seed_nodes:
             nid = node["id"]
             if nid in seen_ids:
@@ -350,29 +354,53 @@ class KGRetrieverService(BaseRetriever):
                 node, similarity=sim, source="vector", retrieval_reason=reason,
             ))
 
-            if self.hop_limit >= 1:
-                neighbour_ids = [n for n in self._get_neighbour_ids(nid) if n not in seen_ids]
-                neighbours = self._fetch_nodes_by_ids(neighbour_ids)
-                for nb in neighbours:
-                    nb_id = nb["id"]
-                    if nb_id not in seen_ids:
+        # Multi-hop expansion
+        if self.hop_limit >= 1:
+            # Start with seed node IDs as the frontier
+            frontier_ids: List[str] = [n["id"] for n in seed_nodes]
+
+            for hop in range(1, self.hop_limit + 1):
+                next_frontier: List[str] = []
+
+                for nid in frontier_ids:
+                    neighbour_ids = [
+                        n for n in self._get_neighbour_ids(nid)
+                        if n not in seen_ids
+                    ]
+                    if not neighbour_ids:
+                        continue
+
+                    neighbours = self._fetch_nodes_by_ids(neighbour_ids)
+                    for nb in neighbours:
+                        nb_id = nb["id"]
+                        if nb_id in seen_ids:
+                            continue
                         seen_ids.add(nb_id)
+                        next_frontier.append(nb_id)
+
                         exp_reason = (
-                            f"Graph expansion from seed {nid[:8]}… "
+                            f"Hop {hop} from {nid[:8]}… "
                             f"(edge weight >= {self.min_edge_weight})"
                         )
                         logger.info(
-                            "[Retrieval] EXPANDED node=%s key=%s via_seed=%s reason=%s",
-                            nb_id, nb.get("node_key", "?"), nid[:8], exp_reason,
+                            "[Retrieval] HOP-%d node=%s key=%s type=%s via=%s",
+                            hop, nb_id, nb.get("node_key", "?")[:30],
+                            nb.get("type", "?"), nid[:8],
                         )
                         documents.append(self._node_to_document(
-                            nb, source="graph_expansion", retrieval_reason=exp_reason,
+                            nb, source=f"graph_hop_{hop}",
+                            retrieval_reason=exp_reason,
                         ))
 
+                frontier_ids = next_frontier
+                if not frontier_ids:
+                    logger.debug("Hop %d: no new frontier, stopping", hop)
+                    break
+
         logger.info(
-            "[Retrieval] Complete: %d documents (%d seed + %d expanded) for query=%r",
+            "[Retrieval] Complete: %d documents (%d seed + %d expanded, %d hops) for query=%r",
             len(documents), len(seed_nodes), len(documents) - len(seed_nodes),
-            query[:80],
+            self.hop_limit, query[:80],
         )
         return documents
 
