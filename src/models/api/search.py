@@ -13,6 +13,7 @@ class SemanticSearchRequest(TenantScoped):
     query: str
     top_k: int = Field(default=5, ge=1, le=50)
     node_types: Optional[List[str]] = Field(default=None, description="Filter to these node types (e.g. ['Entity', 'Chunk'])")
+    document_ids: Optional[List[str]] = Field(default=None, description="Filter to chunks from these document IDs only")
 
 
 class GraphSearchRequest(TenantScoped):
@@ -23,6 +24,7 @@ class GraphSearchRequest(TenantScoped):
     min_edge_weight: float = Field(default=0.75, ge=0.0, le=1.0)
     node_types: Optional[List[str]] = Field(default=None, description="Filter to these node types (e.g. ['Entity', 'Chunk'])")
     rel_types: Optional[List[str]] = Field(default=None, description="Filter edge traversal to these rel_types (e.g. ['mentions'])")
+    document_ids: Optional[List[str]] = Field(default=None, description="Filter to chunks from these document IDs only")
 
 
 class SearchResultItem(BaseModel):

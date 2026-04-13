@@ -156,7 +156,7 @@ def _upsert_chunk(sb, *, tenant_id, document_id, chunk_index, start_page, end_pa
 # -- KG build --
 
 
-def _build_kg_nodes_and_edges(sb, *, tenant_id, client_id, chunk_ids, chunk_texts, chunk_embeddings):
+def _build_kg_nodes_and_edges(sb, *, tenant_id, client_id, document_id, chunk_ids, chunk_texts, chunk_embeddings):
     """Create Chunk KG nodes and cosine similarity edges."""
     if not chunk_ids:
         return 0, 0
@@ -170,7 +170,7 @@ def _build_kg_nodes_and_edges(sb, *, tenant_id, client_id, chunk_ids, chunk_text
                 "p_tenant_id": str(tenant_id), "p_client_id": str(client_id),
                 "p_node_key": f"chunk:{cid}", "p_type": "Chunk",
                 "p_name": f"Chunk", "p_description": preview + ("…" if len(text) > 80 else ""),
-                "p_properties": {"chunk_id": str(cid)},
+                "p_properties": {"chunk_id": str(cid), "document_id": str(document_id)},
                 "p_embedding": emb, "p_status": "active",
             }).execute()
             node_id = UUID(str(res.data))
@@ -384,6 +384,7 @@ def ingest_processed(req: ProcessedDocumentRequest) -> IngestProcessedResponse:
     try:
         nodes, edges = _build_kg_nodes_and_edges(
             sb, tenant_id=req.tenant_id, client_id=req.client_id,
+            document_id=document_id,
             chunk_ids=chunk_ids, chunk_texts=chunk_texts, chunk_embeddings=embeddings,
         )
         logger.info("KG build: %d nodes, %d edges", nodes, edges)
@@ -453,6 +454,7 @@ def ingest_processed_web(req: ProcessedWebRequest) -> IngestProcessedResponse:
     try:
         nodes, edges = _build_kg_nodes_and_edges(
             sb, tenant_id=req.tenant_id, client_id=req.client_id,
+            document_id=document_id,
             chunk_ids=chunk_ids, chunk_texts=chunk_texts, chunk_embeddings=embeddings,
         )
         logger.info("KG build: %d nodes, %d edges", nodes, edges)

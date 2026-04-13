@@ -86,6 +86,7 @@ class KGRetrieverService(BaseRetriever):
 
     node_types: Optional[List[str]] = Field(default=None, description="Filter vector search to these node types (e.g. ['Entity', 'Chunk'])")
     rel_types: Optional[List[str]] = Field(default=None, description="Filter edge traversal to these rel_types (e.g. ['mentions', 'co_occurs'])")
+    document_ids: Optional[List[str]] = Field(default=None, description="Filter to chunks from these document IDs only")
 
     # ── Private clients ───────────────────────────────────────────────────────
     _sb: Optional[Client] = None
@@ -123,7 +124,8 @@ class KGRetrieverService(BaseRetriever):
                 "p_client_id": str(self.client_id),
                 "p_embedding": embedding,
                 "p_top_k": self.top_k,
-                "p_types": self.node_types,  # None = all types
+                "p_types": self.node_types,
+                "p_document_ids": self.document_ids,
             }).execute()
             return res.data or []
         except Exception as e:
@@ -178,7 +180,7 @@ class KGRetrieverService(BaseRetriever):
         return unique[:self.max_neighbours]
 
     def _fetch_nodes_by_ids(self, node_ids: List[str]) -> List[JsonDict]:
-        """Batch fetch active node rows by ID list."""
+        """Batch fetch active node rows by ID list, filtered by document scope if set."""
         if not node_ids:
             return []
         try:
@@ -190,7 +192,18 @@ class KGRetrieverService(BaseRetriever):
                 .eq("status", "active")
                 .execute()
             )
-            return res.data or []
+            rows = res.data or []
+
+            # Filter expanded nodes to document scope (if set)
+            if self.document_ids and rows:
+                doc_set = set(self.document_ids)
+                rows = [
+                    r for r in rows
+                    if (r.get("properties") or {}).get("document_id") in doc_set
+                    or (r.get("type") == "Entity")  # entities are cross-document, always include
+                ]
+
+            return rows
         except Exception as e:
             logger.error("Node batch fetch failed: %s", e)
             return []

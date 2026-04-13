@@ -56,7 +56,7 @@ def semantic_search(req: SemanticSearchRequest) -> SemanticSearchResponse:
     svc = SearchService(tenant_id=req.tenant_id, client_id=req.client_id)
 
     try:
-        docs = svc.semantic_search(req.query, top_k=req.top_k, node_types=req.node_types)
+        docs = svc.semantic_search(req.query, top_k=req.top_k, node_types=req.node_types, document_ids=req.document_ids)
     except Exception as e:
         logger.exception("Semantic search failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -81,6 +81,7 @@ def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
             min_edge_weight=req.min_edge_weight,
             node_types=req.node_types,
             rel_types=req.rel_types,
+            document_ids=req.document_ids,
         )
     except Exception as e:
         logger.exception("Graph search failed")
