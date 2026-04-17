@@ -1,16 +1,17 @@
 """
 /search router
 --------------
-Query-time endpoints. Vector search over the KG.
+POST /search/graph — Vector search over the KG with configurable graph expansion.
 
-POST /search/semantic  — Pure vector search over kg_nodes via pgvector
-POST /search/graph     — Vector search + one-hop edge expansion (graph RAG)
-
-The /search/ask endpoint (full RAG with LLM) has moved to the agent service.
+hop_limit controls depth: 0 = pure vector, 1 = one-hop, 2 = two-hop bridging.
+Optional client_id scopes to a single client; omit for tenant-wide search.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import time
 from typing import List
 
 from fastapi import APIRouter, HTTPException
@@ -18,11 +19,13 @@ from fastapi import APIRouter, HTTPException
 from src.models.api.search import (
     GraphSearchRequest,
     GraphSearchResponse,
-    SemanticSearchRequest,
-    SemanticSearchResponse,
     SearchResultItem,
 )
+from src.services.cache_service import CacheService
 from src.services.search_service import SearchService
+
+_SEARCH_CACHE_TTL = 300  # 5 minutes
+_cache = CacheService()
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["search"])
@@ -46,31 +49,39 @@ def _docs_to_result_items(docs) -> List[SearchResultItem]:
             evidence_quote=m.get("evidence_quote"),
             evidence_score=m.get("evidence_score"),
             evidence_count=m.get("evidence_count", 0),
+            final_score=m.get("final_score"),
+            source_type=m.get("source_type"),
         ))
     return items
 
 
-@router.post("/semantic", response_model=SemanticSearchResponse)
-def semantic_search(req: SemanticSearchRequest) -> SemanticSearchResponse:
-    """Pure vector similarity search over KG nodes."""
-    svc = SearchService(tenant_id=req.tenant_id, client_id=req.client_id)
-
-    try:
-        docs = svc.semantic_search(req.query, top_k=req.top_k, node_types=req.node_types, document_ids=req.document_ids)
-    except Exception as e:
-        logger.exception("Semantic search failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-    return SemanticSearchResponse(
-        query=req.query,
-        results=_docs_to_result_items(docs),
-    )
-
-
 @router.post("/graph", response_model=GraphSearchResponse)
 def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
-    """Vector search + graph expansion retrieval."""
+    """Vector search + configurable graph expansion.
+
+    hop_limit controls graph expansion depth:
+      0 = pure vector search (no expansion)
+      1 = one-hop neighbor expansion (default)
+      2 = two-hop neighbor expansion (entity bridging)
+    """
+    # Cache lookup — normalised payload excludes tenant/client (in key) and query state
+    cache_payload = req.model_dump(mode="json", exclude={"tenant_id", "client_id"})
+    payload_hash = hashlib.sha256(
+        json.dumps(cache_payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:24]
+    cache_key = CacheService.search_key(
+        tenant_id=str(req.tenant_id),
+        client_id=str(req.client_id) if req.client_id else None,
+        payload_hash=payload_hash,
+    )
+    cached = _cache.get(cache_key)
+    if cached is not None:
+        logger.info("search.graph cache=hit tenant=%s client=%s", req.tenant_id, req.client_id)
+        return GraphSearchResponse(**cached)
+
     svc = SearchService(tenant_id=req.tenant_id, client_id=req.client_id)
+    started = time.perf_counter()
+    scope = "client" if req.client_id else "tenant"
 
     try:
         docs = svc.graph_search(
@@ -82,6 +93,10 @@ def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
             node_types=req.node_types,
             rel_types=req.rel_types,
             document_ids=req.document_ids,
+            recency_weight=req.recency_weight,
+            boost_pinned=req.boost_pinned,
+            exclude_status=req.exclude_status,
+            source_types=req.source_types,
         )
     except Exception as e:
         logger.exception("Graph search failed")
@@ -89,10 +104,25 @@ def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
 
     seed_count = min(req.top_k, len(docs))
     expanded_count = len(docs) - seed_count
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "search.graph tenant=%s client=%s scope=%s hop_limit=%d top_k=%d results=%d seed=%d expanded=%d elapsed_ms=%s",
+        req.tenant_id,
+        req.client_id,
+        scope,
+        req.hop_limit,
+        req.top_k,
+        len(docs),
+        seed_count,
+        expanded_count,
+        elapsed_ms,
+    )
 
-    return GraphSearchResponse(
+    response = GraphSearchResponse(
         query=req.query,
         results=_docs_to_result_items(docs),
         seed_nodes=seed_count,
         expanded_nodes=expanded_count,
     )
+    _cache.set(cache_key, response.model_dump(mode="json"), _SEARCH_CACHE_TTL)
+    return response

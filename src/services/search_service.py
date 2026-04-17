@@ -47,7 +47,7 @@ class SearchService:
     def __init__(
         self,
         tenant_id: UUID,
-        client_id: UUID,
+        client_id: Optional[UUID],
         openai_api_key: Optional[str] = None,
         supabase_url: Optional[str] = None,
         supabase_key: Optional[str] = None,
@@ -71,6 +71,10 @@ class SearchService:
         node_types: Optional[List[str]] = None,
         rel_types: Optional[List[str]] = None,
         document_ids: Optional[List[str]] = None,
+        recency_weight: float = 0.0,
+        boost_pinned: bool = False,
+        exclude_status: Optional[List[str]] = None,
+        source_types: Optional[List[str]] = None,
     ) -> KGRetrieverService:
         return KGRetrieverService(
             supabase_url=self._sb_url,
@@ -86,18 +90,11 @@ class SearchService:
             node_types=node_types,
             rel_types=rel_types,
             document_ids=document_ids,
+            recency_weight=recency_weight,
+            boost_pinned=boost_pinned,
+            exclude_status=exclude_status,
+            source_types=source_types,
         )
-
-    def semantic_search(
-        self,
-        query: str,
-        top_k: int = 5,
-        node_types: Optional[List[str]] = None,
-        document_ids: Optional[List[str]] = None,
-    ) -> List[Document]:
-        """Pure vector search — no graph expansion."""
-        retriever = self._build_retriever(top_k=top_k, hop_limit=0, node_types=node_types, document_ids=document_ids)
-        return retriever.invoke(query)
 
     def graph_search(
         self,
@@ -109,8 +106,12 @@ class SearchService:
         node_types: Optional[List[str]] = None,
         rel_types: Optional[List[str]] = None,
         document_ids: Optional[List[str]] = None,
+        recency_weight: float = 0.0,
+        boost_pinned: bool = False,
+        exclude_status: Optional[List[str]] = None,
+        source_types: Optional[List[str]] = None,
     ) -> List[Document]:
-        """Vector search + graph expansion."""
+        """Vector search + graph expansion with optional hybrid ranking."""
         retriever = self._build_retriever(
             top_k=top_k,
             hop_limit=hop_limit,
@@ -119,6 +120,10 @@ class SearchService:
             node_types=node_types,
             rel_types=rel_types,
             document_ids=document_ids,
+            recency_weight=recency_weight,
+            boost_pinned=boost_pinned,
+            exclude_status=exclude_status,
+            source_types=source_types,
         )
         return retriever.invoke(query)
 

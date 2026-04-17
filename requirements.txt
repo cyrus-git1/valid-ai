@@ -17,3 +17,17 @@ langchain-openai
 # HTTP client
 requests
 httpx
+
+# Structured logging + observability
+structlog
+
+# Auth, rate-limiting, caching (shared Redis)
+redis
+
+# Async job queue (Phase 2: async ingest)
+arq
+
+# Tests (Phase 3)
+pytest
+pytest-asyncio
+pytest-cov

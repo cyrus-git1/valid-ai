@@ -31,7 +31,6 @@ Import
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -40,8 +39,9 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_openai import OpenAIEmbeddings
-from pydantic import Field
 from supabase import Client, create_client
+
+from src.models.api.retrieval import KGRetrieverConfig
 
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 JsonDict = Dict[str, Any]
 
 
-class KGRetrieverService(BaseRetriever):
+class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
     """
     LangChain-compatible retriever over the Supabase Knowledge Graph.
 
@@ -70,23 +70,6 @@ class KGRetrieverService(BaseRetriever):
     """
 
     # ── Pydantic fields ───────────────────────────────────────────────────────
-    supabase_url: str = Field(default_factory=lambda: os.environ["SUPABASE_URL"])
-    supabase_key: str = Field(default_factory=lambda: os.environ["SUPABASE_SERVICE_KEY"])
-    openai_api_key: str = Field(default_factory=lambda: os.environ["OPENAI_API_KEY"])
-
-    tenant_id: UUID
-    client_id: UUID
-
-    top_k: int = Field(default=5, description="Seed nodes from vector search")
-    hop_limit: int = Field(default=2, description="Graph expansion hops (0 = vector only, 2 = entity bridging)")
-    max_neighbours: int = Field(default=3, description="Max neighbours pulled per seed node")
-    min_edge_weight: float = Field(default=0.75, description="Min edge weight to follow")
-
-    embed_model: str = "text-embedding-3-small"
-
-    node_types: Optional[List[str]] = Field(default=None, description="Filter vector search to these node types (e.g. ['Entity', 'Chunk'])")
-    rel_types: Optional[List[str]] = Field(default=None, description="Filter edge traversal to these rel_types (e.g. ['mentions', 'co_occurs'])")
-    document_ids: Optional[List[str]] = Field(default=None, description="Filter to chunks from these document IDs only")
 
     # ── Private clients ───────────────────────────────────────────────────────
     _sb: Optional[Client] = None
@@ -119,14 +102,22 @@ class KGRetrieverService(BaseRetriever):
         Returns rows with: id, node_key, name, description, properties, type, similarity
         """
         try:
-            res = self._sb.rpc("search_kg_nodes", {
+            params = {
                 "p_tenant_id": str(self.tenant_id),
-                "p_client_id": str(self.client_id),
+                "p_client_id": str(self.client_id) if self.client_id else None,
                 "p_embedding": embedding,
                 "p_top_k": self.top_k,
                 "p_types": self.node_types,
                 "p_document_ids": self.document_ids,
-            }).execute()
+                "p_recency_weight": self.recency_weight,
+                "p_boost_pinned": self.boost_pinned,
+                "p_embedding_model": self.embed_model,
+            }
+            if self.exclude_status is not None:
+                params["p_exclude_status"] = self.exclude_status
+            if self.source_types is not None:
+                params["p_source_types"] = self.source_types
+            res = self._sb.rpc("search_kg_nodes", params).execute()
             return res.data or []
         except Exception as e:
             logger.error("search_kg_nodes RPC failed: %s", e)
@@ -143,11 +134,12 @@ class KGRetrieverService(BaseRetriever):
                 self._sb.table("kg_edges")
                 .select("dst_id, weight")
                 .eq("tenant_id", str(self.tenant_id))
-                .eq("client_id", str(self.client_id))
                 .eq("src_id", node_id)
                 .eq("is_active", True)
                 .gte("weight", self.min_edge_weight)
             )
+            if self.client_id:
+                out_q = out_q.eq("client_id", str(self.client_id))
             if self.rel_types:
                 out_q = out_q.in_("rel_type", self.rel_types)
             out_res = out_q.order("weight", desc=True).limit(self.max_neighbours).execute()
@@ -158,11 +150,12 @@ class KGRetrieverService(BaseRetriever):
                 self._sb.table("kg_edges")
                 .select("src_id, weight")
                 .eq("tenant_id", str(self.tenant_id))
-                .eq("client_id", str(self.client_id))
                 .eq("dst_id", node_id)
                 .eq("is_active", True)
                 .gte("weight", self.min_edge_weight)
             )
+            if self.client_id:
+                in_q = in_q.eq("client_id", str(self.client_id))
             if self.rel_types:
                 in_q = in_q.in_("rel_type", self.rel_types)
             in_res = in_q.order("weight", desc=True).limit(self.max_neighbours).execute()
@@ -190,8 +183,10 @@ class KGRetrieverService(BaseRetriever):
                 .in_("id", node_ids)
                 .eq("tenant_id", str(self.tenant_id))
                 .eq("status", "active")
-                .execute()
             )
+            if self.client_id:
+                res = res.eq("client_id", str(self.client_id))
+            res = res.execute()
             rows = res.data or []
 
             # Filter expanded nodes to document scope (if set)
@@ -210,20 +205,21 @@ class KGRetrieverService(BaseRetriever):
 
     # ── Chunk content ─────────────────────────────────────────────────────────
 
-    def _get_chunk_content(self, chunk_id: str) -> Optional[str]:
+    def _get_chunk_content(self, chunk_id: str, document_id: Optional[str]) -> Optional[str]:
         """
         Fetch full chunk text from the chunks table.
         Node description is only an 80-char preview — LLM needs the full text.
         """
         try:
-            res = (
+            q = (
                 self._sb.table("chunks")
                 .select("content")
                 .eq("id", chunk_id)
                 .eq("tenant_id", str(self.tenant_id))
-                .limit(1)
-                .execute()
             )
+            if document_id:
+                q = q.eq("document_id", document_id)
+            res = q.limit(1).execute()
             if res.data:
                 return res.data[0]["content"]
         except Exception as e:
@@ -242,8 +238,10 @@ class KGRetrieverService(BaseRetriever):
                 .eq("node_id", node_id)
                 .order("score", desc=True)
                 .limit(5)
-                .execute()
             )
+            if self.client_id:
+                res = res.eq("client_id", str(self.client_id))
+            res = res.execute()
             return res.data or []
         except Exception as e:
             logger.warning("Node evidence fetch failed for %s: %s", node_id, e)
@@ -255,6 +253,8 @@ class KGRetrieverService(BaseRetriever):
         self,
         node: JsonDict,
         similarity: Optional[float] = None,
+        final_score: Optional[float] = None,
+        source_type: Optional[str] = None,
         source: str = "vector",
         retrieval_reason: str = "",
     ) -> Document:
@@ -285,7 +285,7 @@ class KGRetrieverService(BaseRetriever):
             content = "\n".join(parts)
         else:
             # Chunk node — fetch full text from chunks table
-            content = (self._get_chunk_content(chunk_id) if chunk_id else None) \
+            content = (self._get_chunk_content(chunk_id, props.get("document_id")) if chunk_id else None) \
                 or node.get("description") \
                 or node.get("name") \
                 or ""
@@ -306,6 +306,10 @@ class KGRetrieverService(BaseRetriever):
         }
         if similarity is not None:
             metadata["similarity_score"] = round(float(similarity), 4)
+        if final_score is not None:
+            metadata["final_score"] = round(float(final_score), 4)
+        if source_type is not None:
+            metadata["source_type"] = source_type
 
         return Document(page_content=content, metadata=metadata)
 
@@ -345,13 +349,19 @@ class KGRetrieverService(BaseRetriever):
             seen_ids.add(nid)
 
             sim = node.get("similarity")
+            fscore = node.get("final_score")
             reason = f"Vector similarity={sim:.4f}" if sim is not None else "Vector match"
             logger.info(
-                "[Retrieval] SEED node=%s key=%s sim=%.4f reason=%s",
-                nid, node.get("node_key", "?"), sim or 0, reason,
+                "[Retrieval] SEED node=%s key=%s sim=%.4f final=%.4f reason=%s",
+                nid, node.get("node_key", "?"), sim or 0, fscore or 0, reason,
             )
             documents.append(self._node_to_document(
-                node, similarity=sim, source="vector", retrieval_reason=reason,
+                node,
+                similarity=sim,
+                final_score=fscore,
+                source_type=node.get("source_type"),
+                source="vector",
+                retrieval_reason=reason,
             ))
 
         # Multi-hop expansion
@@ -407,7 +417,7 @@ class KGRetrieverService(BaseRetriever):
     # ── Convenience constructor ───────────────────────────────────────────────
 
     @classmethod
-    def from_env(cls, tenant_id: UUID, client_id: UUID, **kwargs) -> "KGRetrieverService":
+    def from_env(cls, tenant_id: UUID, client_id: Optional[UUID] = None, **kwargs) -> "KGRetrieverService":
         """
         Construct from environment variables (SUPABASE_URL, SUPABASE_SERVICE_KEY, OPENAI_API_KEY).
 
