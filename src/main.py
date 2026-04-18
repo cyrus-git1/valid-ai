@@ -44,30 +44,35 @@ app = FastAPI(
     version="4.0.0",
 )
 
-# ── CORS (locked down) ───────────────────────────────────────────────────────
-# No more wildcard. Must be explicitly configured via CORS_ORIGINS (comma-sep).
-# In dev, default to localhost.
-_cors_raw = os.environ.get("CORS_ORIGINS", "").strip()
-if _cors_raw:
-    _origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+# ── CORS ─────────────────────────────────────────────────────────────────────
+# AUTH_ENABLED=false disables API key auth (dev/testing only).
+# CORS defaults to wildcard when AUTH_ENABLED=false.
+# TODO: flip default back to "true" before production
+_auth_enabled = os.environ.get("AUTH_ENABLED", "false").lower() == "true"
+
+if _auth_enabled:
+    _cors_raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if _cors_raw:
+        _origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+    else:
+        _origins = ["http://localhost", "http://localhost:3000", "http://localhost:8003"]
 else:
-    logger.warning("cors_origins_not_set_defaulting_to_localhost")
-    _origins = ["http://localhost", "http://localhost:3000", "http://localhost:8003"]
+    logger.warning("auth_disabled_cors_open_dev_mode")
+    _origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
 )
 
-# ── Middleware chain (outermost first) ───────────────────────────────────────
-# Starlette runs them bottom-up; so last-added = innermost.
-# Order we want at runtime: RequestId -> Auth -> RateLimit -> routes
+# ── Middleware chain ─────────────────────────────────────────────────────────
 app.add_middleware(RateLimiterMiddleware)
-app.add_middleware(AuthMiddleware)
+if _auth_enabled:
+    app.add_middleware(AuthMiddleware)
 app.add_middleware(RequestIdMiddleware)
 
 # ── Exception handlers ───────────────────────────────────────────────────────
