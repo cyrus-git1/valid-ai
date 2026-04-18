@@ -759,6 +759,18 @@ class IngestJobStatus(BaseModel):
     completed_at: Optional[str] = None
 
 
+def _redis_available() -> bool:
+    """Check if Redis is reachable (cached for the process lifetime)."""
+    try:
+        import redis as _redis
+        url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        r = _redis.from_url(url, decode_responses=True)
+        r.ping()
+        return True
+    except Exception:
+        return False
+
+
 def _enqueue_job(
     *,
     request: Request,
@@ -767,7 +779,10 @@ def _enqueue_job(
     tenant_id: str,
     client_id: Optional[str],
 ) -> str:
-    """Create ingest_jobs row, enqueue arq task, return job_id."""
+    """Create ingest_jobs row, enqueue arq task, return job_id.
+
+    Falls back to synchronous execution if Redis/arq is unavailable.
+    """
     sb = get_supabase()
     state = getattr(request, "state", None)
     key_id = getattr(state, "key_id", None) if state else None
@@ -785,37 +800,59 @@ def _enqueue_job(
     if not job_id:
         raise HTTPException(status_code=500, detail="Failed to create job row")
 
-    try:
-        import asyncio
-        from arq.connections import RedisSettings, create_pool
-        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    enqueued = False
+    if _redis_available():
+        try:
+            import asyncio
+            from arq.connections import RedisSettings, create_pool
+            redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
-        async def _enqueue():
-            pool = await create_pool(RedisSettings.from_dsn(redis_url))
-            task_name = "run_processed_ingest_task" if job_type == "processed" else "run_processed_web_ingest_task"
-            await pool.enqueue_job(task_name, job_id, payload)
+            async def _enqueue():
+                pool = await create_pool(RedisSettings.from_dsn(redis_url))
+                task_name = "run_processed_ingest_task" if job_type == "processed" else "run_processed_web_ingest_task"
+                await pool.enqueue_job(task_name, job_id, payload)
 
-        asyncio.run(_enqueue())
-    except Exception as e:
-        sb.table("ingest_jobs").update({
-            "status": "failed",
-            "error": f"enqueue failed: {e}",
-        }).eq("id", job_id).execute()
-        raise HTTPException(status_code=503, detail=f"Queue unavailable: {e}")
+            asyncio.run(_enqueue())
+            enqueued = True
+        except Exception as e:
+            logger.warning("arq enqueue failed, falling back to sync: %s", e)
+
+    if not enqueued:
+        # No Redis / arq unavailable — run synchronously (old behavior)
+        logger.info("ingest.sync_fallback job=%s type=%s", job_id, job_type)
+        try:
+            sb.table("ingest_jobs").update({"status": "running", "started_at": datetime.utcnow().isoformat()}).eq("id", job_id).execute()
+            if job_type == "processed":
+                result = _execute_processed_ingest(ProcessedDocumentRequest.model_validate(payload))
+            else:
+                result = _execute_processed_web_ingest(ProcessedWebRequest.model_validate(payload))
+            sb.table("ingest_jobs").update({
+                "status": "complete",
+                "completed_at": datetime.utcnow().isoformat(),
+                "document_id": result.document_id,
+                "result": result.model_dump(mode="json"),
+            }).eq("id", job_id).execute()
+        except Exception as e:
+            sb.table("ingest_jobs").update({
+                "status": "failed",
+                "completed_at": datetime.utcnow().isoformat(),
+                "error": str(e)[:2000],
+            }).eq("id", job_id).execute()
+            raise HTTPException(status_code=500, detail=str(e))
 
     AuditService(sb).record(
         request=request,
-        action=f"ingest.{job_type}.enqueue",
+        action=f"ingest.{job_type}.{'enqueue' if enqueued else 'sync'}",
         resource_type="ingest_job",
         resource_id=job_id,
-        metadata={"client_id": client_id},
+        metadata={"client_id": client_id, "async": enqueued},
     )
     return job_id
 
 
 @router.post("/processed", response_model=IngestJobAck, status_code=202)
 def ingest_processed(req: ProcessedDocumentRequest, request: Request) -> IngestJobAck:
-    """Enqueue a processed-document ingest job. Returns 202 + job_id."""
+    """Ingest a processed document. Async via arq if Redis available, else synchronous."""
     job_id = _enqueue_job(
         request=request,
         job_type="processed",
@@ -828,7 +865,7 @@ def ingest_processed(req: ProcessedDocumentRequest, request: Request) -> IngestJ
 
 @router.post("/processed-web", response_model=IngestJobAck, status_code=202)
 def ingest_processed_web(req: ProcessedWebRequest, request: Request) -> IngestJobAck:
-    """Enqueue a processed-web ingest job. Returns 202 + job_id."""
+    """Ingest a processed web scrape. Async via arq if Redis available, else synchronous."""
     job_id = _enqueue_job(
         request=request,
         job_type="processed-web",
