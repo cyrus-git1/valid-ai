@@ -49,3 +49,34 @@ class GraphSearchResponse(BaseModel):
     results: List[SearchResultItem]
     seed_nodes: int
     expanded_nodes: int
+
+
+# ── Valid KG search (client-facing sales bot) ───────────────────────────────
+
+
+class ValidSearchRequest(BaseModel):
+    """Search the valid-docs KG. No tenant/client scoping — it's a global corpus."""
+    query: str
+    top_k: int = Field(default=5, ge=1, le=20)
+    node_types: Optional[List[str]] = Field(
+        default=None,
+        description="Filter to these node types (e.g. ['Chunk', 'Entity'])",
+    )
+
+
+class ValidSearchResultItem(BaseModel):
+    node_id: str
+    node_key: str
+    node_type: str
+    entity_type: Optional[str] = None
+    name: str
+    content: str
+    document_id: Optional[str] = None
+    chunk_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+    similarity_score: Optional[float] = None
+
+
+class ValidSearchResponse(BaseModel):
+    query: str
+    results: List[ValidSearchResultItem]
