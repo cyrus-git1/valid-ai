@@ -36,6 +36,7 @@ from src.middleware.request_id import RequestIdMiddleware
 from src.routers.admin_router import router as admin_router
 from src.routers.data_router import router as data_router
 from src.routers.ingest_router import router as ingest_router
+from src.routers.privacy_router import router as privacy_router
 from src.routers.search_router import router as search_router
 
 app = FastAPI(
@@ -47,8 +48,7 @@ app = FastAPI(
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # AUTH_ENABLED=false disables API key auth (dev/testing only).
 # CORS defaults to wildcard when AUTH_ENABLED=false.
-# TODO: flip default back to "true" before production
-_auth_enabled = os.environ.get("AUTH_ENABLED", "false").lower() == "true"
+_auth_enabled = os.environ.get("AUTH_ENABLED", "true").lower() == "true"
 
 if _auth_enabled:
     _cors_raw = os.environ.get("CORS_ORIGINS", "").strip()
@@ -83,6 +83,7 @@ app.include_router(admin_router)
 app.include_router(search_router)
 app.include_router(data_router)
 app.include_router(ingest_router)
+app.include_router(privacy_router)
 
 
 @app.get("/", tags=["root"])

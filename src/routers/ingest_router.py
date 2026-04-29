@@ -63,7 +63,18 @@ class EntityItem(BaseModel):
     properties: Dict[str, Any] = Field(default_factory=dict)
 
 
-class ProcessedDocumentRequest(BaseModel):
+class _ProvenanceMixin(BaseModel):
+    """Optional provenance fields. Agents may pass these to associate an
+    ingest with a specific actor / source app / request for audit + history.
+    """
+    actor_id: Optional[str] = None
+    actor_type: Optional[str] = None  # 'user' | 'service' | 'agent' | 'anonymous'
+    source_app: Optional[str] = None
+    request_id: Optional[str] = None
+    previous_version_id: Optional[str] = None
+
+
+class ProcessedDocumentRequest(_ProvenanceMixin):
     tenant_id: UUID
     client_id: UUID
     file_name: str
@@ -79,7 +90,7 @@ class ProcessedDocumentRequest(BaseModel):
     entities: List[EntityItem] = Field(default_factory=list)
 
 
-class ProcessedWebRequest(BaseModel):
+class ProcessedWebRequest(_ProvenanceMixin):
     tenant_id: UUID
     client_id: UUID
     url: str
@@ -101,7 +112,7 @@ class IngestProcessedResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
-class SummaryIngestRequest(BaseModel):
+class SummaryIngestRequest(_ProvenanceMixin):
     """Thin, synchronous ingest path for LLM-generated summary chunks.
 
     Produces exactly one document + one chunk + one KG node. Skips the
@@ -171,6 +182,33 @@ def _upload_to_bucket(sb, *, tenant_id: UUID, client_id: UUID, file_bytes: bytes
     return f"bucket:{_PDF_BUCKET}/{path}"
 
 
+def _set_audit_context(sb, *, actor_id: Optional[str], request_id: Optional[str], reason: Optional[str] = None) -> None:
+    """Set per-transaction GUCs that the audit triggers read.
+
+    Best-effort: failures here must never block the underlying mutation.
+    """
+    try:
+        sb.rpc("set_audit_context", {
+            "p_actor_id": actor_id,
+            "p_request_id": request_id,
+            "p_reason": reason,
+        }).execute()
+    except Exception as e:
+        logger.debug("set_audit_context failed: %s", e)
+
+
+def _provenance_dict(prov: Optional[Any]) -> Dict[str, Any]:
+    """Extract the standard provenance fields from a request body model."""
+    if not prov:
+        return {}
+    out: Dict[str, Any] = {}
+    for k in ("actor_id", "actor_type", "source_app", "request_id", "previous_version_id"):
+        v = getattr(prov, k, None)
+        if v is not None:
+            out[k] = v
+    return out
+
+
 def _upsert_document(
     sb,
     *,
@@ -184,6 +222,12 @@ def _upsert_document(
     is_pinned: bool = False,
     is_canonical: bool = False,
     status: str = "active",
+    actor_id: Optional[str] = None,
+    actor_type: Optional[str] = None,
+    source_app: Optional[str] = None,
+    request_id: Optional[str] = None,
+    ingest_job_id: Optional[str] = None,
+    previous_version_id: Optional[str] = None,
 ) -> UUID:
     existing = (
         sb.table("documents").select("id")
@@ -192,27 +236,38 @@ def _upsert_document(
         .eq("source_uri", source_uri)
         .limit(1).execute()
     )
-    if existing.data:
-        doc_id = existing.data[0]["id"]
-        sb.table("documents").update({
-            "source_type": source_type,
-            "title": title,
-            "metadata": metadata or {},
-            "source_timestamp": source_timestamp.isoformat() if source_timestamp else None,
-            "is_pinned": is_pinned,
-            "is_canonical": is_canonical,
-            "status": status,
-        }).eq("id", doc_id).eq("tenant_id", str(tenant_id)).eq("client_id", str(client_id)).execute()
-        return UUID(doc_id)
-
-    res = sb.table("documents").insert({
-        "tenant_id": str(tenant_id), "client_id": str(client_id),
-        "source_type": source_type, "source_uri": source_uri,
-        "title": title, "metadata": metadata or {},
+    base = {
+        "source_type": source_type,
+        "title": title,
+        "metadata": metadata or {},
         "source_timestamp": source_timestamp.isoformat() if source_timestamp else None,
         "is_pinned": is_pinned,
         "is_canonical": is_canonical,
         "status": status,
+    }
+    prov = {
+        "actor_id": actor_id,
+        "actor_type": actor_type,
+        "source_app": source_app,
+        "request_id": request_id,
+        "ingest_job_id": ingest_job_id,
+        "previous_version_id": previous_version_id,
+    }
+    # Strip None values so we don't overwrite previously-set provenance with NULL on update
+    prov = {k: v for k, v in prov.items() if v is not None}
+
+    if existing.data:
+        doc_id = existing.data[0]["id"]
+        sb.table("documents").update({**base, **prov}).eq("id", doc_id).eq(
+            "tenant_id", str(tenant_id)
+        ).eq("client_id", str(client_id)).execute()
+        return UUID(doc_id)
+
+    res = sb.table("documents").insert({
+        "tenant_id": str(tenant_id), "client_id": str(client_id),
+        "source_uri": source_uri,
+        **base,
+        **prov,
     }).execute()
     if not res.data:
         raise RuntimeError("documents insert returned no rows")
@@ -533,7 +588,10 @@ def _execute_processed_ingest(req: ProcessedDocumentRequest) -> IngestProcessedR
         file_name=req.file_name,
     )
 
-    # Document row
+    # Set audit context (read by triggers) and capture provenance
+    _set_audit_context(sb, actor_id=req.actor_id, request_id=req.request_id)
+
+    # Document row (with provenance)
     document_id = _upsert_document(
         sb, tenant_id=req.tenant_id, client_id=req.client_id,
         source_type=req.source_type, source_uri=source_uri,
@@ -548,6 +606,11 @@ def _execute_processed_ingest(req: ProcessedDocumentRequest) -> IngestProcessedR
         is_pinned=req.is_pinned,
         is_canonical=req.is_canonical,
         status=req.status,
+        actor_id=req.actor_id,
+        actor_type=req.actor_type,
+        source_app=req.source_app,
+        request_id=req.request_id,
+        previous_version_id=req.previous_version_id,
     )
 
     if not req.chunks:
@@ -642,6 +705,8 @@ def _execute_processed_web_ingest(req: ProcessedWebRequest) -> IngestProcessedRe
     warnings: List[str] = []
     started = time.perf_counter()
 
+    _set_audit_context(sb, actor_id=req.actor_id, request_id=req.request_id)
+
     document_id = _upsert_document(
         sb, tenant_id=req.tenant_id, client_id=req.client_id,
         source_type="web", source_uri=req.url,
@@ -655,6 +720,11 @@ def _execute_processed_web_ingest(req: ProcessedWebRequest) -> IngestProcessedRe
         is_pinned=req.is_pinned,
         is_canonical=req.is_canonical,
         status=req.status,
+        actor_id=req.actor_id,
+        actor_type=req.actor_type,
+        source_app=req.source_app,
+        request_id=req.request_id,
+        previous_version_id=req.previous_version_id,
     )
 
     if not req.chunks:
@@ -758,6 +828,18 @@ class IngestJobStatus(BaseModel):
     enqueued_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    # Provenance
+    actor_id: Optional[str] = None
+    actor_type: Optional[str] = None
+    source_app: Optional[str] = None
+    source_type: Optional[str] = None
+    source_uri: Optional[str] = None
+    request_id: Optional[str] = None
+
+
+class IngestJobsListResponse(BaseModel):
+    items: List[IngestJobStatus]
+    total: int
 
 
 def _redis_available() -> bool:
@@ -779,15 +861,42 @@ def _enqueue_job(
     payload: Dict[str, Any],
     tenant_id: str,
     client_id: Optional[str],
+    actor_id: Optional[str] = None,
+    actor_type: Optional[str] = None,
+    source_app: Optional[str] = None,
+    body_request_id: Optional[str] = None,
+    source_type: Optional[str] = None,
+    source_uri: Optional[str] = None,
 ) -> str:
     """Create ingest_jobs row, enqueue arq task, return job_id.
 
     Falls back to synchronous execution if Redis/arq is unavailable.
+
+    If body_request_id is provided AND a job already exists at that
+    (tenant, request_id), reuses the existing job_id (idempotency key).
     """
     sb = get_supabase()
     state = getattr(request, "state", None)
     key_id = getattr(state, "key_id", None) if state else None
-    req_id = getattr(state, "request_id", None) if state else None
+    # Prefer body request_id (from agent) over middleware request_id, since the
+    # agent's request_id is the canonical correlation key for the user-facing op.
+    req_id = body_request_id or (getattr(state, "request_id", None) if state else None)
+
+    # Idempotency: if we already have a job for this (tenant, request_id),
+    # return it instead of creating a duplicate.
+    if req_id:
+        try:
+            existing = (
+                sb.table("ingest_jobs").select("id, status")
+                .eq("tenant_id", tenant_id)
+                .eq("request_id", req_id)
+                .order("enqueued_at", desc=True).limit(1).execute()
+            )
+            if existing.data:
+                logger.info("ingest.idempotency_hit request_id=%s job=%s", req_id, existing.data[0]["id"])
+                return existing.data[0]["id"]
+        except Exception:
+            pass
 
     row = sb.table("ingest_jobs").insert({
         "tenant_id": tenant_id,
@@ -796,6 +905,11 @@ def _enqueue_job(
         "status": "queued",
         "request_id": req_id,
         "key_id": key_id,
+        "actor_id": actor_id,
+        "actor_type": actor_type,
+        "source_app": source_app,
+        "source_type": source_type,
+        "source_uri": source_uri,
     }).execute()
     job_id = (row.data or [{}])[0].get("id")
     if not job_id:
@@ -860,6 +974,12 @@ def ingest_processed(req: ProcessedDocumentRequest, request: Request) -> IngestJ
         payload=req.model_dump(mode="json"),
         tenant_id=str(req.tenant_id),
         client_id=str(req.client_id) if req.client_id else None,
+        actor_id=req.actor_id,
+        actor_type=req.actor_type,
+        source_app=req.source_app,
+        body_request_id=req.request_id,
+        source_type=req.source_type,
+        source_uri=req.file_name,
     )
     return IngestJobAck(job_id=job_id)
 
@@ -873,23 +993,17 @@ def ingest_processed_web(req: ProcessedWebRequest, request: Request) -> IngestJo
         payload=req.model_dump(mode="json"),
         tenant_id=str(req.tenant_id),
         client_id=str(req.client_id) if req.client_id else None,
+        actor_id=req.actor_id,
+        actor_type=req.actor_type,
+        source_app=req.source_app,
+        body_request_id=req.request_id,
+        source_type="web",
+        source_uri=req.url,
     )
     return IngestJobAck(job_id=job_id)
 
 
-@router.get("/jobs/{job_id}", response_model=IngestJobStatus)
-def get_ingest_job(job_id: str, request: Request) -> IngestJobStatus:
-    """Fetch status of an ingest job. Tenant is enforced via auth middleware."""
-    sb = get_supabase()
-    tenant_id = getattr(request.state, "tenant_id", None)
-    q = sb.table("ingest_jobs").select("*").eq("id", job_id)
-    if tenant_id:
-        q = q.eq("tenant_id", str(tenant_id))
-    res = q.limit(1).execute()
-    rows = res.data or []
-    if not rows:
-        raise HTTPException(status_code=404, detail="Job not found")
-    row = rows[0]
+def _row_to_job_status(row: Dict[str, Any]) -> IngestJobStatus:
     return IngestJobStatus(
         job_id=row["id"],
         status=row["status"],
@@ -902,6 +1016,68 @@ def get_ingest_job(job_id: str, request: Request) -> IngestJobStatus:
         enqueued_at=row.get("enqueued_at"),
         started_at=row.get("started_at"),
         completed_at=row.get("completed_at"),
+        actor_id=row.get("actor_id"),
+        actor_type=row.get("actor_type"),
+        source_app=row.get("source_app"),
+        source_type=row.get("source_type"),
+        source_uri=row.get("source_uri"),
+        request_id=row.get("request_id"),
+    )
+
+
+@router.get("/jobs/{job_id}", response_model=IngestJobStatus)
+def get_ingest_job(job_id: str, request: Request) -> IngestJobStatus:
+    """Fetch status of a single ingest job. Tenant enforced via auth middleware."""
+    sb = get_supabase()
+    tenant_id = getattr(request.state, "tenant_id", None)
+    q = sb.table("ingest_jobs").select("*").eq("id", job_id)
+    if tenant_id:
+        q = q.eq("tenant_id", str(tenant_id))
+    res = q.limit(1).execute()
+    rows = res.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _row_to_job_status(rows[0])
+
+
+@router.get("/jobs", response_model=IngestJobsListResponse)
+def list_ingest_jobs(
+    request: Request,
+    tenant_id: Optional[UUID] = None,
+    client_id: Optional[UUID] = None,
+    actor_id: Optional[str] = None,
+    status: Optional[str] = None,
+    since: Optional[datetime] = None,
+    limit: int = 50,
+) -> IngestJobsListResponse:
+    """List ingest jobs with filters. Backs upload-history UI in agent service.
+
+    When auth is enabled, tenant scope is enforced from the API key.
+    The `tenant_id` query param is allowed only when it matches the key's tenant
+    (auth middleware already rejects mismatches at the request level).
+    """
+    sb = get_supabase()
+    auth_tenant = getattr(request.state, "tenant_id", None)
+    effective_tenant = str(auth_tenant) if auth_tenant else (str(tenant_id) if tenant_id else None)
+
+    q = sb.table("ingest_jobs").select("*", count="exact").order("enqueued_at", desc=True)
+    if effective_tenant:
+        q = q.eq("tenant_id", effective_tenant)
+    if client_id:
+        q = q.eq("client_id", str(client_id))
+    if actor_id:
+        q = q.eq("actor_id", actor_id)
+    if status:
+        q = q.eq("status", status)
+    if since:
+        q = q.gte("enqueued_at", since.isoformat())
+    q = q.limit(max(1, min(limit, 500)))
+
+    res = q.execute()
+    rows = res.data or []
+    return IngestJobsListResponse(
+        items=[_row_to_job_status(r) for r in rows],
+        total=res.count or len(rows),
     )
 
 
@@ -982,6 +1158,9 @@ def ingest_summary(req: SummaryIngestRequest, request: Request) -> SummaryIngest
     if req.topic:
         md["topic"] = req.topic
 
+    # Audit context (so triggers stamp the SOC 2 actor on every row write)
+    _set_audit_context(sb, actor_id=req.actor_id, request_id=req.request_id)
+
     source_uri = _summary_source_uri(req)
     doc_res = sb.table("documents").insert({
         "tenant_id": str(req.tenant_id),
@@ -993,6 +1172,13 @@ def ingest_summary(req: SummaryIngestRequest, request: Request) -> SummaryIngest
         "is_canonical": True,
         "status": "active",
         "metadata": md,
+        "actor_id": req.actor_id,
+        "actor_type": req.actor_type,
+        "source_app": req.source_app,
+        "request_id": req.request_id,
+        # Chain to the row we just deprecated, if any — this becomes the
+        # version history for summary regeneration.
+        "previous_version_id": superseded_id or req.previous_version_id,
     }).execute()
     document_id = (doc_res.data or [{}])[0].get("id")
     if not document_id:
@@ -1139,7 +1325,7 @@ def _summary_title(req: SummaryIngestRequest) -> str:
 _VALID_ALLOWED_TYPES = {"pdf", "docx", "pptx", "xlsx", "csv", "txt", "md"}
 
 
-class ValidIngestRequest(BaseModel):
+class ValidIngestRequest(_ProvenanceMixin):
     """Ingest a file into the valid-docs KG (client-facing sales bot).
 
     No tenant/client scoping — valid's corpus is a single global collection.
@@ -1209,6 +1395,9 @@ def ingest_valid(req: ValidIngestRequest, request: Request) -> ValidIngestRespon
     except Exception as e:
         warnings.append(f"File upload to valid-docs failed: {e}")
 
+    # Audit context (read by triggers)
+    _set_audit_context(sb, actor_id=req.actor_id, request_id=req.request_id)
+
     # 1. Document row
     source_uri = f"bucket:{_VALID_DOCS_BUCKET}/{storage_path}"
     doc_res = sb.table("documents").upsert({
@@ -1219,6 +1408,11 @@ def ingest_valid(req: ValidIngestRequest, request: Request) -> ValidIngestRespon
         "is_canonical": True,
         "status": "active",
         "metadata": {**req.metadata, "corpus": "valid-docs", "file_name": req.file_name, "file_type": req.source_type},
+        "actor_id": req.actor_id,
+        "actor_type": req.actor_type,
+        "source_app": req.source_app,
+        "request_id": req.request_id,
+        "previous_version_id": req.previous_version_id,
     }, on_conflict="tenant_id,client_id,source_uri").execute()
     document_id = (doc_res.data or [{}])[0].get("id")
     if not document_id:

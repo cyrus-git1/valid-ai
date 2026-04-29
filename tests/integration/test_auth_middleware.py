@@ -11,6 +11,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+os.environ["AUTH_ENABLED"] = "true"   # auth tests require auth on
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("CORS_ORIGINS", "http://test.local")
 

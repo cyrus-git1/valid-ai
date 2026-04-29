@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 import pytest
 from fastapi.testclient import TestClient
 
+os.environ["AUTH_ENABLED"] = "true"   # exercises the AuthMiddleware path
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("CORS_ORIGINS", "http://test.local")
 

@@ -66,20 +66,27 @@ begin new.updated_at = now(); return new; end; $$;
 
 -- ── documents ───────────────────────────────────────────────────────────────
 create table if not exists public.documents (
-  id               uuid primary key default gen_random_uuid(),
-  tenant_id        uuid not null,
-  client_id        uuid,
-  source_type      text not null,
-  source_uri       text,
-  title            text,
-  source_timestamp timestamptz,
-  is_pinned        boolean not null default false,
-  is_canonical     boolean not null default false,
-  status           text not null default 'active'
-                   check (status in ('active','draft','deprecated','archived','flagged')),
-  metadata         jsonb not null default '{}'::jsonb,
-  created_at       timestamptz not null default now(),
-  updated_at       timestamptz not null default now()
+  id                  uuid primary key default gen_random_uuid(),
+  tenant_id           uuid not null,
+  client_id           uuid,
+  source_type         text not null,
+  source_uri          text,
+  title               text,
+  source_timestamp    timestamptz,
+  is_pinned           boolean not null default false,
+  is_canonical        boolean not null default false,
+  status              text not null default 'active'
+                      check (status in ('active','draft','deprecated','archived','flagged')),
+  metadata            jsonb not null default '{}'::jsonb,
+  -- Provenance (migration 29)
+  actor_id            text,
+  actor_type          text check (actor_type is null or actor_type in ('user','service','agent','anonymous')),
+  source_app          text,
+  request_id          text,
+  ingest_job_id       uuid,
+  previous_version_id uuid references public.documents(id) on delete set null,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
 );
 
 create unique index if not exists documents_tenant_source_uq    on public.documents(tenant_id, client_id, source_uri);
@@ -89,6 +96,10 @@ create index if not exists documents_metadata_gin               on public.docume
 create index if not exists documents_ranking_scope_idx          on public.documents(tenant_id, client_id, status);
 create index if not exists documents_source_timestamp_idx       on public.documents(tenant_id, client_id, source_timestamp desc nulls last);
 create index if not exists documents_pinned_idx                 on public.documents(tenant_id, client_id, is_pinned, is_canonical);
+create index if not exists documents_actor_idx                  on public.documents(tenant_id, actor_id, created_at desc);
+create index if not exists documents_ingest_job_idx             on public.documents(ingest_job_id);
+create index if not exists documents_previous_version_idx       on public.documents(previous_version_id);
+create index if not exists documents_request_idx                on public.documents(request_id);
 
 -- One canonical active summary per scope (ContextSummary / DocumentSummary / TopicSummary)
 do $$ begin
@@ -114,6 +125,7 @@ create table if not exists public.chunks (
   content         text not null,
   content_tokens  int,
   metadata        jsonb not null default '{}'::jsonb,
+  pii_annotations jsonb not null default '[]'::jsonb,
   created_at      timestamptz not null default now(),
   embedding       vector(1536),
   embedding_model text not null default 'text-embedding-3-small'
@@ -124,6 +136,7 @@ create index if not exists chunks_tenant_doc_idx             on public.chunks(te
 create index if not exists chunks_metadata_gin               on public.chunks using gin(metadata);
 create index if not exists chunks_embedding_hnsw             on public.chunks using hnsw (embedding vector_cosine_ops);
 create index if not exists chunks_embedding_model_idx        on public.chunks(tenant_id, embedding_model);
+create index if not exists chunks_pii_annotations_gin        on public.chunks using gin(pii_annotations);
 
 
 -- ── kg_nodes ────────────────────────────────────────────────────────────────
@@ -291,12 +304,16 @@ create table if not exists public.audit_log (
   id            uuid primary key default gen_random_uuid(),
   tenant_id     uuid not null,
   key_id        uuid,
+  actor_id      text,                                       -- migration 29
   request_id    text not null,
   action        text not null,
   resource_type text,
   resource_id   text,
   status        text not null,
   metadata      jsonb not null default '{}'::jsonb,
+  "before"      jsonb,                                      -- migration 29
+  "after"       jsonb,                                      -- migration 29
+  reason        text,                                       -- migration 29 (REVEAL/EXPORT)
   source_ip     text,
   created_at    timestamptz not null default now(),
   constraint audit_log_status_check check (status in ('success','failure'))
@@ -306,6 +323,7 @@ create index if not exists audit_log_tenant_created_idx on public.audit_log(tena
 create index if not exists audit_log_tenant_action_idx  on public.audit_log(tenant_id, action, created_at desc);
 create index if not exists audit_log_resource_idx       on public.audit_log(resource_type, resource_id);
 create index if not exists audit_log_request_idx        on public.audit_log(request_id);
+create index if not exists audit_log_actor_idx          on public.audit_log(actor_id, created_at desc);
 
 
 -- ── ingest_jobs ─────────────────────────────────────────────────────────────
@@ -321,16 +339,24 @@ create table if not exists public.ingest_jobs (
   document_id  uuid,
   result       jsonb,
   error        text,
+  -- Provenance (migration 29)
+  actor_id     text,
+  actor_type   text check (actor_type is null or actor_type in ('user','service','agent','anonymous')),
+  source_app   text,
+  source_type  text,
+  source_uri   text,
   enqueued_at  timestamptz not null default now(),
   started_at   timestamptz,
   completed_at timestamptz,
-  constraint ingest_jobs_status_check check (status in ('queued','running','complete','failed')),
+  constraint ingest_jobs_status_check check (status in ('queued','running','processing','complete','succeeded','failed')),
   constraint ingest_jobs_type_check   check (job_type in ('processed','processed-web'))
 );
 
 create index if not exists ingest_jobs_tenant_client_idx on public.ingest_jobs(tenant_id, client_id, enqueued_at desc);
 create index if not exists ingest_jobs_status_idx        on public.ingest_jobs(status, enqueued_at);
 create index if not exists ingest_jobs_payload_hash_idx  on public.ingest_jobs(tenant_id, payload_hash);
+create index if not exists ingest_jobs_actor_idx         on public.ingest_jobs(tenant_id, actor_id, enqueued_at desc);
+create index if not exists ingest_jobs_request_idx       on public.ingest_jobs(request_id);
 
 
 -- ============================================================================
