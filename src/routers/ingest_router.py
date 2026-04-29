@@ -245,6 +245,10 @@ def _upsert_document(
         "is_canonical": is_canonical,
         "status": status,
     }
+    # Provenance is INSERT-only. Once set, the columns are frozen — they
+    # describe who created this version of the row. Subsequent mutations
+    # (status changes, metadata edits) are captured in audit_log with their
+    # own actor via set_audit_context().
     prov = {
         "actor_id": actor_id,
         "actor_type": actor_type,
@@ -253,16 +257,19 @@ def _upsert_document(
         "ingest_job_id": ingest_job_id,
         "previous_version_id": previous_version_id,
     }
-    # Strip None values so we don't overwrite previously-set provenance with NULL on update
     prov = {k: v for k, v in prov.items() if v is not None}
 
     if existing.data:
+        # UPDATE path: never touch provenance columns. Just refresh the
+        # editable fields. The audit_log trigger will capture WHO made this
+        # update via the per-request audit GUC.
         doc_id = existing.data[0]["id"]
-        sb.table("documents").update({**base, **prov}).eq("id", doc_id).eq(
+        sb.table("documents").update(base).eq("id", doc_id).eq(
             "tenant_id", str(tenant_id)
         ).eq("client_id", str(client_id)).execute()
         return UUID(doc_id)
 
+    # INSERT path: stamp provenance once, forever.
     res = sb.table("documents").insert({
         "tenant_id": str(tenant_id), "client_id": str(client_id),
         "source_uri": source_uri,
@@ -1398,25 +1405,44 @@ def ingest_valid(req: ValidIngestRequest, request: Request) -> ValidIngestRespon
     # Audit context (read by triggers)
     _set_audit_context(sb, actor_id=req.actor_id, request_id=req.request_id)
 
-    # 1. Document row
+    # 1. Document row — provenance is INSERT-only, never overwritten on update
     source_uri = f"bucket:{_VALID_DOCS_BUCKET}/{storage_path}"
-    doc_res = sb.table("documents").upsert({
-        "tenant_id": VALID_TENANT_ID,
+    base_fields = {
         "source_type": req.source_type,
         "source_uri": source_uri,
         "title": req.title,
         "is_canonical": True,
         "status": "active",
         "metadata": {**req.metadata, "corpus": "valid-docs", "file_name": req.file_name, "file_type": req.source_type},
-        "actor_id": req.actor_id,
-        "actor_type": req.actor_type,
-        "source_app": req.source_app,
-        "request_id": req.request_id,
-        "previous_version_id": req.previous_version_id,
-    }, on_conflict="tenant_id,client_id,source_uri").execute()
-    document_id = (doc_res.data or [{}])[0].get("id")
-    if not document_id:
-        raise HTTPException(status_code=500, detail="Failed to create document row")
+    }
+    existing = (
+        sb.table("documents").select("id")
+        .eq("tenant_id", VALID_TENANT_ID)
+        .is_("client_id", "null")
+        .eq("source_uri", source_uri)
+        .limit(1).execute()
+    )
+    if existing.data:
+        document_id = existing.data[0]["id"]
+        sb.table("documents").update(base_fields).eq("id", document_id).execute()
+    else:
+        prov = {
+            k: v for k, v in {
+                "actor_id": req.actor_id,
+                "actor_type": req.actor_type,
+                "source_app": req.source_app,
+                "request_id": req.request_id,
+                "previous_version_id": req.previous_version_id,
+            }.items() if v is not None
+        }
+        doc_res = sb.table("documents").insert({
+            "tenant_id": VALID_TENANT_ID,
+            **base_fields,
+            **prov,
+        }).execute()
+        document_id = (doc_res.data or [{}])[0].get("id")
+        if not document_id:
+            raise HTTPException(status_code=500, detail="Failed to create document row")
 
     if not req.chunks:
         return ValidIngestResponse(
