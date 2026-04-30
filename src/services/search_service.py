@@ -75,6 +75,7 @@ class SearchService:
         boost_pinned: bool = False,
         exclude_status: Optional[List[str]] = None,
         source_types: Optional[List[str]] = None,
+        redact_pii: bool = True,
     ) -> KGRetrieverService:
         return KGRetrieverService(
             supabase_url=self._sb_url,
@@ -94,6 +95,7 @@ class SearchService:
             boost_pinned=boost_pinned,
             exclude_status=exclude_status,
             source_types=source_types,
+            redact_pii=redact_pii,
         )
 
     def graph_search(
@@ -110,8 +112,9 @@ class SearchService:
         boost_pinned: bool = False,
         exclude_status: Optional[List[str]] = None,
         source_types: Optional[List[str]] = None,
+        redact_pii: bool = True,
     ) -> List[Document]:
-        """Vector search + graph expansion with optional hybrid ranking."""
+        """Vector search + graph expansion with optional hybrid ranking + PII redaction."""
         retriever = self._build_retriever(
             top_k=top_k,
             hop_limit=hop_limit,
@@ -124,6 +127,7 @@ class SearchService:
             boost_pinned=boost_pinned,
             exclude_status=exclude_status,
             source_types=source_types,
+            redact_pii=redact_pii,
         )
         return retriever.invoke(query)
 

@@ -14,7 +14,7 @@ import logging
 import time
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 import os
 
@@ -27,6 +27,7 @@ from src.models.api.search import (
     ValidSearchResultItem,
 )
 from src.services.cache_service import CacheService
+from src.services.redaction import caller_can_reveal
 from src.services.search_service import SearchService
 from src.supabase.supabase_client import get_supabase
 
@@ -67,16 +68,22 @@ def _docs_to_result_items(docs) -> List[SearchResultItem]:
 
 
 @router.post("/graph", response_model=GraphSearchResponse)
-def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
+def graph_search(req: GraphSearchRequest, request: Request) -> GraphSearchResponse:
     """Vector search + configurable graph expansion.
 
     hop_limit controls graph expansion depth:
       0 = pure vector search (no expansion)
       1 = one-hop neighbor expansion (default)
       2 = two-hop neighbor expansion (entity bridging)
+
+    Chunk content is PII-redacted on output unless the caller's API key has
+    the `pii:reveal` scope.
     """
-    # Cache lookup — normalised payload excludes tenant/client (in key) and query state
+    # Bake the redaction policy into the cache key so revealed and redacted
+    # responses don't share a cache slot.
+    can_reveal = caller_can_reveal(request)
     cache_payload = req.model_dump(mode="json", exclude={"tenant_id", "client_id"})
+    cache_payload["__pii_revealed"] = can_reveal
     payload_hash = hashlib.sha256(
         json.dumps(cache_payload, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:24]
@@ -108,6 +115,7 @@ def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
             boost_pinned=req.boost_pinned,
             exclude_status=req.exclude_status,
             source_types=req.source_types,
+            redact_pii=not can_reveal,
         )
     except Exception as e:
         logger.exception("Graph search failed")
@@ -116,8 +124,15 @@ def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
     seed_count = min(req.top_k, len(docs))
     expanded_count = len(docs) - seed_count
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    if can_reveal:
+        logger.warning(
+            "search.graph PII_REVEAL tenant=%s client=%s key_id=%s",
+            req.tenant_id,
+            req.client_id,
+            getattr(getattr(request, "state", None), "key_id", None),
+        )
     logger.info(
-        "search.graph tenant=%s client=%s scope=%s hop_limit=%d top_k=%d results=%d seed=%d expanded=%d elapsed_ms=%s",
+        "search.graph tenant=%s client=%s scope=%s hop_limit=%d top_k=%d results=%d seed=%d expanded=%d elapsed_ms=%s pii_revealed=%s",
         req.tenant_id,
         req.client_id,
         scope,
@@ -127,6 +142,7 @@ def graph_search(req: GraphSearchRequest) -> GraphSearchResponse:
         seed_count,
         expanded_count,
         elapsed_ms,
+        can_reveal,
     )
 
     response = GraphSearchResponse(

@@ -40,6 +40,12 @@ class KGRetrieverConfig(TenantOwned):
         description="Filter by parent documents.source_type (e.g. ['ContextSummary','TopicSummary'])",
     )
 
+    # PII output redaction (Option 1: redact at output, not at storage)
+    redact_pii: bool = Field(
+        default=True,
+        description="Apply chunks.pii_annotations to substitute PII spans with aliases on output",
+    )
+
     # Hybrid ranking
     recency_weight: float = Field(default=0.0, description="0.0 = pure vector, 0.3 = 30% recency blend")
     boost_pinned: bool = Field(default=False, description="Boost pinned/canonical documents")

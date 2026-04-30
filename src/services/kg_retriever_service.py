@@ -208,12 +208,14 @@ class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
     def _get_chunk_content(self, chunk_id: str, document_id: Optional[str]) -> Optional[str]:
         """
         Fetch full chunk text from the chunks table.
-        Node description is only an 80-char preview — LLM needs the full text.
+
+        If `redact_pii` is set on the config (default True), pii_annotations
+        are applied to substitute PII spans with their aliases before return.
         """
         try:
             q = (
                 self._sb.table("chunks")
-                .select("content")
+                .select("content, pii_annotations")
                 .eq("id", chunk_id)
                 .eq("tenant_id", str(self.tenant_id))
             )
@@ -221,7 +223,14 @@ class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
                 q = q.eq("document_id", document_id)
             res = q.limit(1).execute()
             if res.data:
-                return res.data[0]["content"]
+                row = res.data[0]
+                content = row.get("content")
+                if content is None:
+                    return None
+                if self.redact_pii:
+                    from src.services.redaction import apply_redaction
+                    content = apply_redaction(content, row.get("pii_annotations"))
+                return content
         except Exception as e:
             logger.warning("Chunk content fetch failed for %s: %s", chunk_id, e)
         return None

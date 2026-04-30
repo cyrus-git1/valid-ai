@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from src.services.audit_service import AuditService
 from src.services.memory_state_service import MemoryStateService
+from src.services.redaction import apply_redaction, caller_can_reveal
 from src.supabase.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -30,14 +31,19 @@ router = APIRouter(prefix="/data", tags=["data"])
 
 @router.get("/documents")
 def list_documents(
+    request: Request,
     tenant_id: UUID = Query(...),
     client_id: UUID = Query(...),
 ):
     """
     Return every document for a tenant+client with all associated chunks.
     Raw data endpoint for the agent service.
+
+    Chunk content is PII-redacted (via chunks.pii_annotations) unless the
+    caller's API key has the `pii:reveal` scope.
     """
     sb = get_supabase()
+    can_reveal = caller_can_reveal(request)
 
     doc_res = (
         sb.table("documents")
@@ -57,7 +63,7 @@ def list_documents(
         sb.table("chunks")
         .select(
             "id, document_id, chunk_index, page_start, page_end, "
-            "content, content_tokens, metadata, embedding"
+            "content, content_tokens, metadata, embedding, pii_annotations"
         )
         .eq("tenant_id", str(tenant_id))
         .in_("document_id", doc_ids)
@@ -67,18 +73,30 @@ def list_documents(
 
     chunks_by_doc: Dict[str, list] = {}
     for row in (chunk_res.data or []):
+        content = row["content"]
+        annotations = row.get("pii_annotations") or []
+        if not can_reveal and annotations:
+            content = apply_redaction(content, annotations)
         chunk = {
             "id": row["id"],
             "document_id": row["document_id"],
             "chunk_index": row["chunk_index"],
             "page_start": row.get("page_start"),
             "page_end": row.get("page_end"),
-            "content": row["content"],
+            "content": content,
             "content_tokens": row.get("content_tokens"),
             "metadata": row.get("metadata") or {},
             "has_embedding": row.get("embedding") is not None,
+            "has_pii": bool(annotations),
         }
         chunks_by_doc.setdefault(row["document_id"], []).append(chunk)
+
+    if can_reveal:
+        logger.warning(
+            "data.documents PII_REVEAL tenant=%s client=%s key_id=%s",
+            tenant_id, client_id,
+            getattr(getattr(request, "state", None), "key_id", None),
+        )
 
     items = [
         {
@@ -344,11 +362,16 @@ def _summary_read_from_docrow(row: Dict[str, Any], chunk_content: str, current_v
 
 @router.get("/context/summary/get", response_model=ContextSummaryReadResponse)
 def get_context_summary(
+    request: Request,
     tenant_id: UUID = Query(...),
     client_id: UUID = Query(...),
 ) -> ContextSummaryReadResponse:
-    """Fetch the canonical ContextSummary document + its chunk content."""
+    """Fetch the canonical ContextSummary document + its chunk content.
+
+    Summary content is PII-redacted unless caller has `pii:reveal` scope.
+    """
     sb = get_supabase()
+    can_reveal = caller_can_reveal(request)
     try:
         doc = (
             sb.table("documents")
@@ -369,10 +392,10 @@ def get_context_summary(
             )
         row = rows[0]
 
-        # Fetch the single chunk for this summary doc
+        # Fetch the single chunk for this summary doc (with annotations)
         chunk_res = (
             sb.table("chunks")
-            .select("content")
+            .select("content, pii_annotations")
             .eq("tenant_id", str(tenant_id))
             .eq("document_id", row["id"])
             .order("chunk_index")
@@ -380,7 +403,12 @@ def get_context_summary(
             .execute()
         )
         chunk_rows = chunk_res.data or []
-        content = chunk_rows[0]["content"] if chunk_rows else ""
+        if chunk_rows:
+            raw_content = chunk_rows[0]["content"]
+            annotations = chunk_rows[0].get("pii_annotations") or []
+            content = raw_content if can_reveal else apply_redaction(raw_content, annotations)
+        else:
+            content = ""
 
         # Staleness: compare stored memory_version vs current client-scoped version
         state = MemoryStateService(sb).get_state(tenant_id=tenant_id, client_id=client_id)
@@ -461,21 +489,29 @@ def list_summaries(
 @router.get("/summaries/document/{document_id}", response_model=ContextSummaryReadResponse)
 def get_document_summary(
     document_id: str,
+    request: Request,
     tenant_id: UUID = Query(...),
     client_id: UUID = Query(...),
 ) -> ContextSummaryReadResponse:
     """Fetch the canonical DocumentSummary for a given source document_id."""
-    return _fetch_scoped_summary(tenant_id, client_id, "DocumentSummary", "document_id", document_id)
+    return _fetch_scoped_summary(
+        tenant_id, client_id, "DocumentSummary", "document_id", document_id,
+        can_reveal=caller_can_reveal(request),
+    )
 
 
 @router.get("/summaries/topic", response_model=ContextSummaryReadResponse)
 def get_topic_summary(
+    request: Request,
     tenant_id: UUID = Query(...),
     client_id: UUID = Query(...),
     topic: str = Query(..., min_length=1),
 ) -> ContextSummaryReadResponse:
     """Fetch the canonical TopicSummary for a given topic string."""
-    return _fetch_scoped_summary(tenant_id, client_id, "TopicSummary", "topic", topic)
+    return _fetch_scoped_summary(
+        tenant_id, client_id, "TopicSummary", "topic", topic,
+        can_reveal=caller_can_reveal(request),
+    )
 
 
 def _fetch_scoped_summary(
@@ -484,6 +520,7 @@ def _fetch_scoped_summary(
     source_type: str,
     scope_field: str,
     scope_value: str,
+    can_reveal: bool = False,
 ) -> ContextSummaryReadResponse:
     sb = get_supabase()
     q = (
@@ -510,7 +547,7 @@ def _fetch_scoped_summary(
 
     chunk_res = (
         sb.table("chunks")
-        .select("content")
+        .select("content, pii_annotations")
         .eq("tenant_id", str(tenant_id))
         .eq("document_id", row["id"])
         .order("chunk_index")
@@ -518,7 +555,12 @@ def _fetch_scoped_summary(
         .execute()
     )
     chunk_rows = chunk_res.data or []
-    content = chunk_rows[0]["content"] if chunk_rows else ""
+    if chunk_rows:
+        raw_content = chunk_rows[0]["content"]
+        annotations = chunk_rows[0].get("pii_annotations") or []
+        content = raw_content if can_reveal else apply_redaction(raw_content, annotations)
+    else:
+        content = ""
 
     state = MemoryStateService(sb).get_state(tenant_id=tenant_id, client_id=client_id)
     current_version = int(state.get("memory_version") or 0)
