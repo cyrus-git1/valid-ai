@@ -29,15 +29,27 @@ router = APIRouter(prefix="/data", tags=["data"])
 # ── Documents listing ────────────────────────────────────────────────────────
 
 
+_SUMMARY_SOURCE_TYPES = ("ContextSummary", "DocumentSummary", "TopicSummary")
+
+
 @router.get("/documents")
 def list_documents(
     request: Request,
     tenant_id: UUID = Query(...),
     client_id: UUID = Query(...),
+    include_summaries: bool = Query(
+        False,
+        description="If true, include ContextSummary/DocumentSummary/TopicSummary "
+                    "rows in the listing. Defaults to false — agents listing source "
+                    "documents almost never want summary rows mixed in.",
+    ),
 ):
     """
-    Return every document for a tenant+client with all associated chunks.
-    Raw data endpoint for the agent service.
+    Return source documents for a tenant+client with all associated chunks.
+
+    Summary documents (ContextSummary, DocumentSummary, TopicSummary) are
+    EXCLUDED by default — use the dedicated /data/summaries endpoints for
+    those. Pass include_summaries=true to opt in.
 
     Chunk content is PII-redacted (via chunks.pii_annotations) unless the
     caller's API key has the `pii:reveal` scope.
@@ -45,14 +57,17 @@ def list_documents(
     sb = get_supabase()
     can_reveal = caller_can_reveal(request)
 
-    doc_res = (
+    doc_q = (
         sb.table("documents")
         .select("*")
         .eq("tenant_id", str(tenant_id))
         .eq("client_id", str(client_id))
-        .order("created_at", desc=True)
-        .execute()
     )
+    if not include_summaries:
+        # Postgrest "not.in" — exclude all three summary source_types
+        # The `not_` method takes (column, operator, value)
+        doc_q = doc_q.not_.in_("source_type", list(_SUMMARY_SOURCE_TYPES))
+    doc_res = doc_q.order("created_at", desc=True).execute()
     docs = doc_res.data or []
 
     if not docs:
