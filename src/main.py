@@ -31,6 +31,7 @@ logger = get_logger(__name__)
 
 from src.exception_handlers import register as register_exception_handlers
 from src.middleware.auth import AuthMiddleware
+from src.middleware.body_size import BodySizeMiddleware
 from src.middleware.rate_limiter import RateLimiterMiddleware
 from src.middleware.request_id import RequestIdMiddleware
 from src.routers.admin_router import router as admin_router
@@ -70,7 +71,10 @@ app.add_middleware(
 )
 
 # ── Middleware chain ─────────────────────────────────────────────────────────
+# add order is reversed at runtime: last-added wraps outermost.
+# Runtime order: RequestId → Auth → BodySize → RateLimiter → route
 app.add_middleware(RateLimiterMiddleware)
+app.add_middleware(BodySizeMiddleware)
 if _auth_enabled:
     app.add_middleware(AuthMiddleware)
 app.add_middleware(RequestIdMiddleware)

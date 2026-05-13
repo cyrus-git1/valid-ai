@@ -27,8 +27,14 @@ from fastapi import APIRouter, HTTPException, Request
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from src.config.plan_limits import get_limit
 from src.services.audit_service import AuditService
 from src.services.memory_state_service import MemoryStateService
+from src.services.tenant_plan_service import (
+    EmbeddingQuotaService,
+    TenantPlanService,
+    estimate_tokens,
+)
 from src.supabase.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -38,6 +44,33 @@ _EMBED_MODEL = "text-embedding-3-small"
 _EMBED_BATCH_SIZE = 64
 _PDF_BUCKET = "pdf"
 _VALID_DOCS_BUCKET = "valid-docs"
+
+
+def _assert_chunks_within_plan(sb, tenant_id, chunk_count: int, *, scopes=None) -> str:
+    """Reject ingest if it exceeds the tenant plan's chunk-count cap.
+
+    Admin scope bypasses. Returns the plan name for logging.
+    """
+    if scopes and "admin" in scopes:
+        return "admin"
+    plan = TenantPlanService(sb).get_plan(str(tenant_id))
+    cap = get_limit(plan, "max_chunks_per_ingest")
+    if chunk_count > cap:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "payload.too_many_chunks",
+                "plan": plan,
+                "chunk_count": chunk_count,
+                "plan_max": cap,
+                "message": (
+                    f"Ingest has {chunk_count} chunks; plan '{plan}' allows "
+                    f"up to {cap} chunks per request. Upgrade your plan or "
+                    f"split into multiple ingest calls."
+                ),
+            },
+        )
+    return plan
 _SIMILARITY_THRESHOLD = 0.82
 _MAX_EDGES_PER_CHUNK = 5
 _ADJACENCY_WINDOW = 1
@@ -150,16 +183,37 @@ class SummaryIngestResponse(BaseModel):
 # -- Embedding helpers --
 
 
-def _embed_texts(texts: List[str]) -> List[List[float]]:
+def _embed_texts(texts: List[str], *, tenant_id=None) -> List[List[float]]:
+    """Call OpenAI embeddings. If `tenant_id` is set, charge tokens against
+    that tenant's daily quota (and reconcile against actual usage).
+    """
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+    quota_svc: Optional[EmbeddingQuotaService] = None
+    estimate = 0
+    if tenant_id:
+        quota_svc = EmbeddingQuotaService(TenantPlanService(get_supabase()))
+        estimate = estimate_tokens(texts)
+        quota_svc.check_and_consume(str(tenant_id), estimate)
+
     resp = client.embeddings.create(model=_EMBED_MODEL, input=texts)
+
+    # Reconcile actual vs estimate (OpenAI reports prompt_tokens)
+    if quota_svc and tenant_id:
+        try:
+            actual = int(getattr(getattr(resp, "usage", None), "prompt_tokens", 0) or 0)
+            if actual:
+                quota_svc.reconcile_actual(str(tenant_id), estimate, actual)
+        except Exception:
+            pass
+
     return [d.embedding for d in resp.data]
 
 
-def _embed_in_batches(texts: List[str]) -> List[List[float]]:
+def _embed_in_batches(texts: List[str], *, tenant_id=None) -> List[List[float]]:
     out: List[List[float]] = []
     for i in range(0, len(texts), _EMBED_BATCH_SIZE):
-        out.extend(_embed_texts(texts[i:i + _EMBED_BATCH_SIZE]))
+        out.extend(_embed_texts(texts[i:i + _EMBED_BATCH_SIZE], tenant_id=tenant_id))
     return out
 
 
@@ -581,6 +635,9 @@ def _execute_processed_ingest(req: ProcessedDocumentRequest) -> IngestProcessedR
     warnings: List[str] = []
     started = time.perf_counter()
 
+    # Plan-gated chunk-count check (rejects oversized payloads before embedding cost)
+    _assert_chunks_within_plan(sb, req.tenant_id, len(req.chunks or []))
+
     # Decode and upload file
     try:
         file_bytes = base64.b64decode(req.file_bytes_b64)
@@ -626,10 +683,12 @@ def _execute_processed_ingest(req: ProcessedDocumentRequest) -> IngestProcessedR
             chunks_upserted=0, warnings=["No chunks provided."],
         )
 
-    # Embed chunks
+    # Embed chunks (charges tenant's daily embedding-token quota)
     chunk_texts = [c.text for c in req.chunks]
     try:
-        embeddings = _embed_in_batches(chunk_texts)
+        embeddings = _embed_in_batches(chunk_texts, tenant_id=req.tenant_id)
+    except HTTPException:
+        raise  # quota errors should surface as-is
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
 
@@ -712,6 +771,7 @@ def _execute_processed_web_ingest(req: ProcessedWebRequest) -> IngestProcessedRe
     warnings: List[str] = []
     started = time.perf_counter()
 
+    _assert_chunks_within_plan(sb, req.tenant_id, len(req.chunks or []))
     _set_audit_context(sb, actor_id=req.actor_id, request_id=req.request_id)
 
     document_id = _upsert_document(
@@ -742,7 +802,9 @@ def _execute_processed_web_ingest(req: ProcessedWebRequest) -> IngestProcessedRe
 
     chunk_texts = [c.text for c in req.chunks]
     try:
-        embeddings = _embed_in_batches(chunk_texts)
+        embeddings = _embed_in_batches(chunk_texts, tenant_id=req.tenant_id)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
 
@@ -1148,7 +1210,7 @@ def ingest_summary(req: SummaryIngestRequest, request: Request) -> SummaryIngest
 
     # 2. Embed the summary text (one call)
     try:
-        embedding = _embed_texts([req.summary_text])[0]
+        embedding = _embed_texts([req.summary_text], tenant_id=req.tenant_id)[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
 
@@ -1389,6 +1451,10 @@ def ingest_valid(req: ValidIngestRequest, request: Request) -> ValidIngestRespon
     # Use a fixed tenant_id for valid's own content (not multi-tenant)
     VALID_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 
+    # Chunk-count cap (valid's tenant_plans row should be 'enterprise')
+    scopes = getattr(getattr(request, "state", None), "scopes", []) or []
+    _assert_chunks_within_plan(sb, VALID_TENANT_ID, len(req.chunks or []), scopes=scopes)
+
     # 0. Decode and upload file to valid-docs bucket
     try:
         file_bytes = base64.b64decode(req.file_bytes_b64)
@@ -1451,10 +1517,10 @@ def ingest_valid(req: ValidIngestRequest, request: Request) -> ValidIngestRespon
             warnings=["No chunks provided."],
         )
 
-    # 2. Embed all chunks
+    # 2. Embed all chunks (charged to the fixed VALID_TENANT_ID daily quota)
     chunk_texts = [c.text for c in req.chunks]
     try:
-        embeddings = _embed_in_batches(chunk_texts)
+        embeddings = _embed_in_batches(chunk_texts, tenant_id=VALID_TENANT_ID)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
 

@@ -157,6 +157,77 @@ def revoke_api_key(key_id: str, request: Request) -> dict:
     return {"revoked": True, "id": key_id}
 
 
+# ── Tenant plan management (subscription tiers) ─────────────────────────────
+
+
+class TenantPlanResponse(BaseModel):
+    tenant_id: str
+    plan: str
+    notes: Optional[str] = None
+    daily_embedding_tokens_limit: int
+    daily_embedding_tokens_used: int = 0
+    max_body_bytes: int
+    max_chunks_per_ingest: int
+
+
+class TenantPlanSetRequest(BaseModel):
+    plan: str = Field(description="free | pro | enterprise")
+    notes: Optional[str] = None
+
+
+def _build_plan_response(tenant_id: str, plan: str, notes: Optional[str] = None) -> TenantPlanResponse:
+    from src.config.plan_limits import get_limit, VALID_PLANS
+    from src.services.tenant_plan_service import EmbeddingQuotaService, TenantPlanService
+    if plan not in VALID_PLANS:
+        plan = "free"
+    sb = get_supabase()
+    plan_svc = TenantPlanService(sb)
+    used = EmbeddingQuotaService(plan_svc).current_usage(tenant_id)
+    return TenantPlanResponse(
+        tenant_id=tenant_id,
+        plan=plan,
+        notes=notes,
+        daily_embedding_tokens_limit=get_limit(plan, "daily_embedding_tokens"),
+        daily_embedding_tokens_used=used,
+        max_body_bytes=get_limit(plan, "max_body_bytes"),
+        max_chunks_per_ingest=get_limit(plan, "max_chunks_per_ingest"),
+    )
+
+
+@router.get("/plan", response_model=TenantPlanResponse)
+def get_my_plan(request: Request) -> TenantPlanResponse:
+    """Return the authenticated tenant's plan + current usage."""
+    tenant_id = getattr(request.state, "tenant_id", None)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="authenticated tenant required")
+    from src.services.tenant_plan_service import TenantPlanService
+    sb = get_supabase()
+    plan_svc = TenantPlanService(sb)
+    plan = plan_svc.get_plan(str(tenant_id))
+    notes = None
+    try:
+        res = sb.table("tenant_plans").select("notes").eq("tenant_id", str(tenant_id)).limit(1).execute()
+        if res.data:
+            notes = res.data[0].get("notes")
+    except Exception:
+        pass
+    return _build_plan_response(str(tenant_id), plan, notes)
+
+
+@router.put("/plan", response_model=TenantPlanResponse)
+def set_my_plan(body: TenantPlanSetRequest, request: Request) -> TenantPlanResponse:
+    """Update the authenticated tenant's plan. Admin scope required."""
+    tenant_id = _require_admin(request)
+    from src.config.plan_limits import VALID_PLANS
+    from src.services.tenant_plan_service import TenantPlanService
+    if body.plan not in VALID_PLANS:
+        raise HTTPException(status_code=400, detail=f"plan must be one of {VALID_PLANS}")
+    sb = get_supabase()
+    TenantPlanService(sb).set_plan(str(tenant_id), body.plan, body.notes)
+    logger.info("admin.plan.set tenant=%s plan=%s", tenant_id, body.plan)
+    return _build_plan_response(str(tenant_id), body.plan, body.notes)
+
+
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """Liveness + dependency check."""

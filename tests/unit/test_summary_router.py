@@ -132,7 +132,7 @@ def client(monkeypatch):
 
     # Stub OpenAI embedding call used by /ingest/summary
     from src.routers import ingest_router as ing
-    monkeypatch.setattr(ing, "_embed_texts", lambda texts: [[0.0] * 1536 for _ in texts])
+    monkeypatch.setattr(ing, "_embed_texts", lambda texts, **kwargs: [[0.0] * 1536 for _ in texts])
 
     # Stub memory_state so bump_dual returns a stable version
     from src.services import memory_state_service
