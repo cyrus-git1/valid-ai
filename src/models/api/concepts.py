@@ -70,6 +70,10 @@ class ConceptCreateResponse(BaseModel):
     canonical_id: str
     node_key: str
     created: bool
+    # True when the supplied canonical_id resolved through a merged tombstone to a
+    # surviving concept. concept_id/canonical_id are the SURVIVOR's; nothing was
+    # written to it. Log these — each one is a resolve-first miss worth tuning on.
+    redirected: bool = False
 
 
 # ── merge ───────────────────────────────────────────────────────────────────

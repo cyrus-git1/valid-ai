@@ -254,8 +254,35 @@ def test_concept_create_idempotent_when_id_supplied(client):
         "canonical_id": "fixed-id",
     })
     assert resp.status_code == 201
-    assert resp.json()["created"] is False
+    body = resp.json()
+    assert body["created"] is False
+    assert body["redirected"] is False          # default when RPC omits the flag
     assert fake.last_params("create_concept")["p_canonical_id"] == "fixed-id"
+
+
+def test_concept_create_redirects_through_merged_tombstone(client):
+    c, fake = client
+    # A deterministic-recreate of a retired canonical_id resolves to the survivor;
+    # the RPC returns the survivor's ids, created=false, redirected=true, and (by
+    # contract) wrote nothing to the survivor.
+    fake.set_rpc("create_concept", {
+        "concept_id": "survivor-node",
+        "canonical_id": "survivor-canon",
+        "node_key": "concept:survivor-canon",
+        "created": False,
+        "redirected": True,
+    })
+    resp = c.post("/concepts/create", json={
+        "tenant_id": TENANT,
+        "canonical_label": "setup pain",          # the retired source label
+        "canonical_id": "c_deadbeef_retired",
+    })
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["redirected"] is True
+    assert body["created"] is False
+    assert body["concept_id"] == "survivor-node"      # survivor's node id
+    assert body["canonical_id"] == "survivor-canon"   # survivor's canonical id
 
 
 # ── concepts:nearest ────────────────────────────────────────────────────────

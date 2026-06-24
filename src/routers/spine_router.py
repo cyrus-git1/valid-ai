@@ -315,6 +315,7 @@ def concepts_create(
         canonical_id=str(ret.get("canonical_id", "")),
         node_key=str(ret.get("node_key", "")),
         created=bool(ret.get("created", False)),
+        redirected=bool(ret.get("redirected", False)),
     )
 
 

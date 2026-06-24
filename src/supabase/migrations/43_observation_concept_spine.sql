@@ -269,7 +269,16 @@ $$;
 -- ── 5. create_concept RPC ───────────────────────────────────────────────────
 -- Mints a per-org canonical_id (random UUID) unless the caller supplies one
 -- (idempotent resolve-first path). Inserts/updates the Concept node.
--- Returns: { concept_id, canonical_id, node_key, created }
+--
+-- Redirect guard: if a supplied canonical_id resolves to a MERGED tombstone
+-- (a deterministic-recreate of a retired id after a merge), follow merged_into
+-- to the terminal survivor and return it with redirected=true. This path is
+-- strictly NON-DESTRUCTIVE — the create payload (canonical_label / alias_set /
+-- embedding) is NEVER applied to the survivor, so a stray recreate can't clobber
+-- a live concept's label or grow its aliases as a side effect. Alias growth is
+-- explicit, via the (future) feedback API only.
+--
+-- Returns: { concept_id, canonical_id, node_key, created, redirected }
 
 create or replace function public.create_concept(
   p_tenant_id        uuid,
@@ -285,16 +294,22 @@ returns jsonb
 language plpgsql
 as $$
 declare
-  v_canonical_id text := coalesce(nullif(p_canonical_id, ''), gen_random_uuid()::text);
-  v_node_key     text := 'concept:' || v_canonical_id;
-  v_node_id      uuid;
-  v_existing_emb vector(1536);
-  v_alias_set    jsonb := jsonb_build_object(
-                            'canonical', p_canonical_label,
-                            'members',   to_jsonb(coalesce(p_aliases, array[]::text[]))
-                          );
-  v_props        jsonb;
-  v_created      boolean := false;
+  v_canonical_id    text := coalesce(nullif(p_canonical_id, ''), gen_random_uuid()::text);
+  v_node_key        text := 'concept:' || v_canonical_id;
+  v_node_id         uuid;
+  v_existing_emb    vector(1536);
+  v_existing_status text;
+  v_merged_into     text;
+  v_found_canon     text;
+  v_found_node_key  text;
+  v_alias_set       jsonb := jsonb_build_object(
+                              'canonical', p_canonical_label,
+                              'members',   to_jsonb(coalesce(p_aliases, array[]::text[]))
+                            );
+  v_props           jsonb;
+  v_created         boolean := false;
+  v_redirected      boolean := false;
+  v_guard           int := 0;
 begin
   v_props := jsonb_build_object(
     'canonical_id',     v_canonical_id,
@@ -303,7 +318,10 @@ begin
     'merge_confidence', p_merge_confidence
   );
 
-  select id, embedding into v_node_id, v_existing_emb
+  select id, embedding, status,
+         properties->>'merged_into', properties->>'canonical_id', node_key
+    into v_node_id, v_existing_emb, v_existing_status,
+         v_merged_into, v_found_canon, v_found_node_key
     from public.kg_nodes
    where tenant_id = p_tenant_id
      and node_key  = v_node_key
@@ -313,6 +331,7 @@ begin
    limit 1;
 
   if v_node_id is null then
+    -- Fresh concept: insert active.
     insert into public.kg_nodes (
       tenant_id, client_id, node_key, type, name, description, properties,
       embedding, embedding_model, status,
@@ -325,7 +344,44 @@ begin
     )
     returning id into v_node_id;
     v_created := true;
+
+  elsif v_existing_status = 'merged' and v_merged_into is not null then
+    -- Tombstone: deterministic-recreate of a retired canonical_id. Follow the
+    -- merged_into chain to the terminal survivor and return it. NON-DESTRUCTIVE:
+    -- the survivor is never updated with the create payload.
+    v_redirected     := true;
+    v_found_node_key := v_merged_into;
+    loop
+      select id, status, properties->>'merged_into',
+             properties->>'canonical_id', node_key
+        into v_node_id, v_existing_status, v_merged_into, v_found_canon, v_found_node_key
+        from public.kg_nodes
+       where tenant_id = p_tenant_id
+         and node_key  = v_found_node_key
+         and type      = 'Concept'
+         and (p_client_id is null and client_id is null
+              or p_client_id is not null and client_id = p_client_id)
+       limit 1;
+      v_guard := v_guard + 1;
+      exit when v_node_id is null
+             or v_existing_status is distinct from 'merged'
+             or v_merged_into is null
+             or v_guard >= 16;
+    end loop;
+    if v_node_id is not null then
+      v_canonical_id := coalesce(v_found_canon, v_canonical_id);
+      v_node_key     := v_found_node_key;
+    end if;
+
+  elsif v_existing_status = 'merged' then
+    -- Merged tombstone with no survivor pointer (shouldn't happen — merge always
+    -- sets merged_into). Stay non-destructive: don't touch it, don't resurrect it.
+    v_canonical_id := coalesce(v_found_canon, v_canonical_id);
+    v_node_key     := coalesce(v_found_node_key, v_node_key);
+
   else
+    -- Active concept: idempotent re-affirm (also the create-with-same-id path;
+    -- updating label/alias/embedding here is intended for a live concept).
     update public.kg_nodes
        set name         = p_canonical_label,
            description  = p_canonical_label,
@@ -335,13 +391,16 @@ begin
            seen_count   = seen_count + 1,
            updated_at   = now()
      where id = v_node_id;
+    v_canonical_id := coalesce(v_found_canon, v_canonical_id);
+    v_node_key     := coalesce(v_found_node_key, v_node_key);
   end if;
 
   return jsonb_build_object(
     'concept_id',   v_node_id,
     'canonical_id', v_canonical_id,
     'node_key',     v_node_key,
-    'created',      v_created
+    'created',      v_created,
+    'redirected',   v_redirected
   );
 end;
 $$;
