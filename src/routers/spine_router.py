@@ -33,6 +33,13 @@ from src.models.api.concepts import (
     ConceptNearestRequest,
     ConceptNearestResponse,
 )
+from src.models.api.app_entities import (
+    AppEntityMatch,
+    AppEntityNearestRequest,
+    AppEntityNearestResponse,
+    AppEntityUpsertRequest,
+    AppEntityUpsertResponse,
+)
 from src.models.api.observations import (
     ObservationRecord,
     ObservationsByConceptResponse,
@@ -46,6 +53,7 @@ logger = get_logger(__name__)
 
 observations_router = APIRouter(prefix="/observations", tags=["observations"])
 concepts_router = APIRouter(prefix="/concepts", tags=["concepts"])
+app_entities_router = APIRouter(prefix="/app-entities", tags=["app-entities"])
 
 
 # ── Tenant helpers (same pattern as entities_router) ────────────────────────
@@ -347,3 +355,121 @@ def concepts_merge(
         rewired_count=int(ret.get("rewired_count", 0)),
         surviving_member_count=int(ret.get("surviving_member_count", 0)),
     )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# App entities — make app objects (insights, quotes, sessions) recallable by id
+# ════════════════════════════════════════════════════════════════════════════
+
+
+@app_entities_router.post("/upsert", response_model=AppEntityUpsertResponse)
+def upsert_app_entity(
+    body: AppEntityUpsertRequest,
+    request: Request,
+) -> AppEntityUpsertResponse:
+    """
+    Upsert one app object as an AppEntity kg_node, keyed by external_id. Idempotent
+    on (tenant, node_key, client). Re-embeds `text` only when it changed.
+    status='inactive' soft-deletes (excluded from recall).
+    """
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    client_id = str(body.client_id) if body.client_id else None
+    sb = get_supabase()
+
+    node_key = f"app:{body.kind}:{body.external_id}"
+
+    # Re-embed only when the stored text changed (name holds the embedded text).
+    unchanged = False
+    try:
+        q = (
+            sb.table("kg_nodes")
+            .select("name")
+            .eq("tenant_id", tenant_id)
+            .eq("node_key", node_key)
+            .eq("type", "AppEntity")
+        )
+        q = q.eq("client_id", client_id) if client_id else q.is_("client_id", "null")
+        rows = (q.limit(1).execute().data) or []
+        unchanged = bool(rows) and rows[0].get("name") == body.text
+    except Exception as ex:
+        logger.debug("app-entity text-change check failed (will re-embed): %s", ex)
+
+    embedding = None
+    if not unchanged:
+        try:
+            embedding = _embed_in_batches([body.text], tenant_id=tenant_id)[0]
+        except Exception as ex:
+            logger.warning("app-entity embedding failed (storing null embedding): %s", ex)
+            embedding = None
+
+    try:
+        res = sb.rpc(
+            "upsert_app_entity",
+            {
+                "p_tenant_id":       tenant_id,
+                "p_client_id":       client_id,
+                "p_study_id":        str(body.study_id),
+                "p_kind":            body.kind,
+                "p_external_id":     body.external_id,
+                "p_text":            body.text,
+                "p_embedding":       embedding,
+                "p_embedding_model": _EMBED_MODEL,
+                "p_status":          body.status,
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("upsert_app_entity failed for %s:%s", body.kind, body.external_id)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+    ret = _rpc_scalar(res.data)
+    return AppEntityUpsertResponse(
+        node_id=str(ret.get("node_id", "")),
+        external_id=ret.get("external_id", body.external_id),
+        kind=ret.get("kind", body.kind),
+        created=bool(ret.get("created", False)),
+    )
+
+
+@app_entities_router.post("/nearest", response_model=AppEntityNearestResponse)
+def nearest_app_entities(
+    body: AppEntityNearestRequest,
+    request: Request,
+) -> AppEntityNearestResponse:
+    """Semantic recall of app objects by id, scoped to study_ids (+ optional kinds)."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    sb = get_supabase()
+
+    embedding = _resolve_embedding(tenant_id=tenant_id, supplied=body.embedding, text=body.query_text)
+    if embedding is None:
+        raise HTTPException(status_code=400, detail="provide query_text or embedding")
+
+    try:
+        res = sb.rpc(
+            "nearest_app_entities",
+            {
+                "p_tenant_id":       tenant_id,
+                "p_embedding":       embedding,
+                "p_study_ids":       [str(s) for s in body.study_ids] if body.study_ids else None,
+                "p_kinds":           body.kinds or None,
+                "p_top_k":           body.top_k,
+                "p_embedding_model": _EMBED_MODEL,
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("nearest_app_entities failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+
+    rows = res.data or []
+    if isinstance(rows, dict):
+        rows = [rows]
+
+    matches = [
+        AppEntityMatch(
+            external_id=str(row.get("external_id", "")),
+            kind=str(row.get("kind", "")),
+            study_id=str(row["study_id"]) if row.get("study_id") else None,
+            similarity=float(row.get("similarity") or 0.0),
+        )
+        for row in rows
+    ]
+    return AppEntityNearestResponse(matches=matches)
