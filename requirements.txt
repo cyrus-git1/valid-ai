@@ -14,6 +14,9 @@ openai
 langchain-core
 langchain-openai
 
+# Reranking (cross-encoder; reranker_service no-ops unless COHERE_API_KEY is set)
+cohere
+
 # HTTP client
 requests
 httpx
