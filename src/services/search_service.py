@@ -76,6 +76,13 @@ class SearchService:
         exclude_status: Optional[List[str]] = None,
         source_types: Optional[List[str]] = None,
         redact_pii: bool = True,
+        study_id: Optional[str] = None,
+        cross_study_entities: bool = False,
+        use_hybrid: bool = True,
+        sparse_weight: float = 1.0,
+        candidate_pool: int = 50,
+        use_rerank: bool = True,
+        dedup_threshold: float = 0.95,
     ) -> KGRetrieverService:
         return KGRetrieverService(
             supabase_url=self._sb_url,
@@ -96,6 +103,13 @@ class SearchService:
             exclude_status=exclude_status,
             source_types=source_types,
             redact_pii=redact_pii,
+            study_id=study_id,
+            cross_study_entities=cross_study_entities,
+            use_hybrid=use_hybrid,
+            sparse_weight=sparse_weight,
+            candidate_pool=candidate_pool,
+            use_rerank=use_rerank,
+            dedup_threshold=dedup_threshold,
         )
 
     def graph_search(
@@ -113,8 +127,15 @@ class SearchService:
         exclude_status: Optional[List[str]] = None,
         source_types: Optional[List[str]] = None,
         redact_pii: bool = True,
+        study_id: Optional[str] = None,
+        cross_study_entities: bool = False,
+        use_hybrid: bool = True,
+        sparse_weight: float = 1.0,
+        candidate_pool: int = 50,
+        use_rerank: bool = True,
+        dedup_threshold: float = 0.95,
     ) -> List[Document]:
-        """Vector search + graph expansion with optional hybrid ranking + PII redaction."""
+        """Hybrid (dense+BM25) graph search with optional rerank + dedup + PII redaction."""
         retriever = self._build_retriever(
             top_k=top_k,
             hop_limit=hop_limit,
@@ -128,6 +149,13 @@ class SearchService:
             exclude_status=exclude_status,
             source_types=source_types,
             redact_pii=redact_pii,
+            study_id=study_id,
+            cross_study_entities=cross_study_entities,
+            use_hybrid=use_hybrid,
+            sparse_weight=sparse_weight,
+            candidate_pool=candidate_pool,
+            use_rerank=use_rerank,
+            dedup_threshold=dedup_threshold,
         )
         return retriever.invoke(query)
 

@@ -24,6 +24,20 @@ class GraphSearchRequest(TenantOwned):
         default=None,
         description="Filter by parent documents.source_type (e.g. ['ContextSummary','TopicSummary'])",
     )
+    study_id: Optional[str] = Field(default=None, description="Restrict to one study")
+    cross_study_entities: bool = Field(
+        default=False,
+        description="When study_id is set, still let Entity/Person/Org/Concept nodes cross studies",
+    )
+
+    # Retrieval-quality pipeline. Defaults OFF for safe rollout — opt-in per call
+    # until the agent layer is wired up to use these knobs. Flip defaults to true
+    # once agent-side query rewriting + per-role strategy is in place.
+    use_hybrid: bool = Field(default=False, description="Hybrid dense+BM25 (RRF). False = dense-only legacy behavior.")
+    sparse_weight: float = Field(default=1.0, ge=0.0, le=5.0, description="RRF weight for sparse rank")
+    candidate_pool: int = Field(default=50, ge=5, le=200, description="Candidates fetched before fusion/rerank/dedup")
+    use_rerank: bool = Field(default=False, description="Cross-encoder rerank (no-op if COHERE_API_KEY unset)")
+    dedup_threshold: float = Field(default=1.0, ge=0.0, le=1.0, description="Drop near-dups above this cosine. 1.0 disables.")
 
 
 class SearchResultItem(BaseModel):

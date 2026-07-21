@@ -48,6 +48,10 @@ logger = logging.getLogger(__name__)
 
 JsonDict = Dict[str, Any]
 
+# Retrieval pipeline tuning (hybrid pool → rerank → MMR).
+_RERANK_POOL = 25   # rerank only the top-N of the hybrid pool — the main cost/latency lever
+_MMR_LAMBDA = 0.7   # MMR relevance<->diversity trade-off (1.0 = pure relevance)
+
 
 class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
     """
@@ -96,31 +100,90 @@ class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
 
     # ── Vector search ─────────────────────────────────────────────────────────
 
-    def _vector_search(self, embedding: List[float]) -> List[JsonDict]:
+    def _vector_search(self, embedding: List[float], query_text: Optional[str] = None) -> List[JsonDict]:
         """
-        Call the search_kg_nodes SQL RPC (kg_search_rpc.sql).
-        Returns rows with: id, node_key, name, description, properties, type, similarity
+        Hybrid (dense + BM25 RRF) by default; falls back to dense-only when
+        use_hybrid=False or query_text is None.
+
+        Pipeline: hybrid RPC fetches `candidate_pool` rows (with embedding +
+        content) → rerank top _RERANK_POOL on content (when a reranker is
+        available; no-op otherwise) → MMR select top_k (relevance + diversity).
         """
         try:
-            params = {
-                "p_tenant_id": str(self.tenant_id),
-                "p_client_id": str(self.client_id) if self.client_id else None,
-                "p_embedding": embedding,
-                "p_top_k": self.top_k,
-                "p_types": self.node_types,
-                "p_document_ids": self.document_ids,
-                "p_recency_weight": self.recency_weight,
-                "p_boost_pinned": self.boost_pinned,
-                "p_embedding_model": self.embed_model,
-            }
-            if self.exclude_status is not None:
-                params["p_exclude_status"] = self.exclude_status
-            if self.source_types is not None:
-                params["p_source_types"] = self.source_types
-            res = self._sb.rpc("search_kg_nodes", params).execute()
-            return res.data or []
+            # ── 1. Fetch candidates ─────────────────────────────────────────
+            if self.use_hybrid and query_text:
+                params = {
+                    "p_tenant_id":            str(self.tenant_id),
+                    "p_client_id":            str(self.client_id) if self.client_id else None,
+                    "p_embedding":            embedding,
+                    "p_query_text":           query_text,
+                    "p_top_k":                self.candidate_pool,
+                    "p_candidate_pool":       self.candidate_pool,
+                    "p_sparse_weight":        self.sparse_weight,
+                    "p_types":                self.node_types,
+                    "p_document_ids":         self.document_ids,
+                    "p_recency_weight":       self.recency_weight,
+                    "p_boost_pinned":         self.boost_pinned,
+                    "p_embedding_model":      self.embed_model,
+                }
+                if self.exclude_status is not None:
+                    params["p_exclude_status"] = self.exclude_status
+                if self.source_types is not None:
+                    params["p_source_types"] = self.source_types
+                if self.study_id is not None:
+                    params["p_study_id"] = self.study_id
+                    params["p_cross_study_entities"] = self.cross_study_entities
+                res = self._sb.rpc("hybrid_search_kg_nodes", params).execute()
+                candidates = res.data or []
+            else:
+                params = {
+                    "p_tenant_id":       str(self.tenant_id),
+                    "p_client_id":       str(self.client_id) if self.client_id else None,
+                    "p_embedding":       embedding,
+                    "p_top_k":           self.candidate_pool,
+                    "p_types":           self.node_types,
+                    "p_document_ids":    self.document_ids,
+                    "p_recency_weight":  self.recency_weight,
+                    "p_boost_pinned":    self.boost_pinned,
+                    "p_embedding_model": self.embed_model,
+                }
+                if self.exclude_status is not None:
+                    params["p_exclude_status"] = self.exclude_status
+                if self.source_types is not None:
+                    params["p_source_types"] = self.source_types
+                if self.study_id is not None:
+                    params["p_study_id"] = self.study_id
+                    params["p_cross_study_entities"] = self.cross_study_entities
+                res = self._sb.rpc("search_kg_nodes", params).execute()
+                candidates = res.data or []
+
+            # ── 2. Rerank on full content (no-op if reranker unavailable) ───
+            # The RPCs now return `content` (migration 49); rerank on that, not
+            # the 80-char description preview. Only the top _RERANK_POOL are sent.
+            if self.use_rerank and query_text and candidates:
+                from src.services.reranker_service import get_reranker
+                reranker = get_reranker()
+                if reranker.is_available():
+                    candidates = reranker.rerank(
+                        query=query_text,
+                        candidates=candidates[:_RERANK_POOL],
+                        text_field="content",
+                        top_n=_RERANK_POOL,
+                    )
+
+            # ── 3. MMR select — relevance + diversity ──────────────────────
+            # Replaces the old semantic_dedup no-op. Uses the `embedding` column
+            # (migration 49) for diversity and the reranker's score as relevance
+            # when present (else cosine to the query).
+            from src.services.retrieval_postprocess import mmr
+            return mmr(
+                embedding,
+                candidates,
+                lambda_param=_MMR_LAMBDA,
+                top_k=self.top_k,
+            )
         except Exception as e:
-            logger.error("search_kg_nodes RPC failed: %s", e)
+            logger.error("hybrid/dense search RPC failed: %s", e)
             return []
 
     # ── Graph expansion ───────────────────────────────────────────────────────
@@ -344,7 +407,7 @@ class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
         logger.debug("Retrieving for query: %r (hop_limit=%d)", query[:80], self.hop_limit)
 
         embedding = self._embed_query(query)
-        seed_nodes = self._vector_search(embedding)
+        seed_nodes = self._vector_search(embedding, query_text=query)
         logger.debug("Vector search returned %d seed nodes", len(seed_nodes))
 
         seen_ids: set[str] = set()

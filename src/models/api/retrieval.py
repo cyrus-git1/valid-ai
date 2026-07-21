@@ -53,3 +53,32 @@ class KGRetrieverConfig(TenantOwned):
         default=None,
         description="Document statuses to exclude (defaults to ['archived','deprecated'] in RPC)",
     )
+
+    # Study scoping (migration 33/34)
+    study_id: Optional[str] = Field(default=None, description="Restrict retrieval to one study")
+    cross_study_entities: bool = Field(
+        default=False,
+        description="When study_id is set, still allow Entity/Person/Org/Concept nodes to cross studies",
+    )
+
+    # ── Retrieval-quality pipeline (migrations 41/42 + reranker_service) ────
+    use_hybrid: bool = Field(
+        default=True,
+        description="Use hybrid_search_kg_nodes (dense + BM25 RRF). When false, falls back to dense-only search_kg_nodes.",
+    )
+    sparse_weight: float = Field(
+        default=1.0,
+        description="RRF weight for sparse rank. 0=dense-only, 1=equal, >1=sparse-biased",
+    )
+    candidate_pool: int = Field(
+        default=50,
+        description="How many candidates to fetch from each retriever before fusion/rerank/dedup",
+    )
+    use_rerank: bool = Field(
+        default=True,
+        description="Apply cross-encoder reranker to fused candidates (no-op if COHERE_API_KEY unset)",
+    )
+    dedup_threshold: float = Field(
+        default=0.95,
+        description="Drop near-duplicate results above this cosine. Set 1.0 to disable.",
+    )

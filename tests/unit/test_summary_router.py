@@ -240,7 +240,7 @@ def test_search_graph_passes_source_types_to_rpc(client, monkeypatch):
     from src.services.kg_retriever_service import KGRetrieverService
     monkeypatch.setattr(
         KGRetrieverService, "_vector_search",
-        lambda self, emb: [],   # empty result set is fine for this test
+        lambda self, emb, query_text=None: [],   # empty result set is fine for this test
     )
     monkeypatch.setattr(
         KGRetrieverService, "_embed_query",

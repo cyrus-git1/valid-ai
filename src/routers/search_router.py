@@ -116,6 +116,13 @@ def graph_search(req: GraphSearchRequest, request: Request) -> GraphSearchRespon
             exclude_status=req.exclude_status,
             source_types=req.source_types,
             redact_pii=not can_reveal,
+            study_id=req.study_id,
+            cross_study_entities=req.cross_study_entities,
+            use_hybrid=req.use_hybrid,
+            sparse_weight=req.sparse_weight,
+            candidate_pool=req.candidate_pool,
+            use_rerank=req.use_rerank,
+            dedup_threshold=req.dedup_threshold,
         )
     except Exception as e:
         logger.exception("Graph search failed")
