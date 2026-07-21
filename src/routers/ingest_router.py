@@ -72,6 +72,11 @@ def _assert_chunks_within_plan(sb, tenant_id, chunk_count: int, *, scopes=None) 
         )
     return plan
 _SIMILARITY_THRESHOLD = 0.82
+# Step 4 — write-time entity reconciliation. Conservative by design: only route a
+# mention onto an existing near-duplicate entity when cosine >= this floor;
+# otherwise mint a new node. A wrong merge silently corrupts the graph and is
+# worse than a duplicate, so keep this high and tune down against real data.
+_ENTITY_RECONCILE_THRESHOLD = 0.93
 _MAX_EDGES_PER_CHUNK = 5
 _ADJACENCY_WINDOW = 1
 _PAGE_WINDOW = 2
@@ -533,26 +538,75 @@ def _link_entities(sb, *, tenant_id, client_id, entities, chunk_ids, chunk_texts
         logger.warning("Entity embedding failed: %s", e)
         entity_embeddings = [None] * len(entities)
 
-    # Upsert entity nodes
+    # Upsert entity nodes.
+    #
+    # Step 4 (write-time reconciliation): before minting a new string-keyed node,
+    # look for an existing near-duplicate Entity of the SAME type via
+    # nearest_entity_candidate (which — unlike search_kg_nodes — also considers
+    # provisional 'pending_linking' nodes, so the first two wordings of a concept
+    # can pool and cross the trust gate). If a candidate is at/above the
+    # conservative similarity floor, route this mention onto it (bumping its
+    # seen_count) instead of creating a duplicate. When uncertain we mint a new
+    # node — a wrong merge silently corrupts the graph and is worse than a dup.
     entity_node_ids: Dict[str, UUID] = {}
     for ent, emb in zip(entities, entity_embeddings):
         normalized_name = ent.name.lower().strip()
-        node_key = f"entity:{tenant_id}:{client_id}:{ent.type.lower()}:{normalized_name}"
+        string_key = f"entity:{tenant_id}:{client_id}:{ent.type.lower()}:{normalized_name}"
+
+        # Defaults = mint a fresh node at the deterministic string key.
+        upsert_key = string_key
+        upsert_name = ent.name
+        upsert_desc = f"{ent.type}: {ent.name}"
+        upsert_props: Dict[str, Any] = {
+            "entity_type": ent.type,
+            "tenant_id": str(tenant_id),
+            "client_id": str(client_id),
+            **ent.properties,
+        }
+        upsert_emb = emb
+        reconciled_onto: Optional[str] = None
+
+        if emb is not None:
+            try:
+                cand = sb.rpc("nearest_entity_candidate", {
+                    "p_tenant_id":       str(tenant_id),
+                    "p_client_id":       str(client_id),
+                    "p_embedding":       emb,
+                    "p_entity_type":     ent.type,
+                    "p_min_similarity":  _ENTITY_RECONCILE_THRESHOLD,
+                    "p_top_k":           1,
+                    "p_embedding_model": _EMBED_MODEL,
+                }).execute()
+                rows = cand.data or []
+                top = rows[0] if rows else None
+                # A reconcile only when the nearest above-floor node is a DIFFERENT
+                # node_key (a different wording). An exact-key hit is just this same
+                # entity being re-ingested — fall through to the normal upsert.
+                if top and top.get("node_key") and top["node_key"] != string_key:
+                    upsert_key = top["node_key"]
+                    upsert_name = top.get("name") or upsert_name        # keep survivor label — no drift
+                    upsert_desc = top.get("description") or upsert_desc
+                    upsert_props = {}                                    # {} merges as a no-op — don't drift survivor props
+                    upsert_emb = None                                    # keep survivor embedding
+                    reconciled_onto = top["node_key"]
+            except Exception as e:
+                logger.warning("entity reconcile lookup failed for '%s' (minting new): %s", ent.name, e)
+
         try:
             res = sb.rpc("upsert_kg_node", {
                 "p_tenant_id": str(tenant_id), "p_client_id": str(client_id),
-                "p_node_key": node_key, "p_type": "Entity",
-                "p_name": ent.name, "p_description": f"{ent.type}: {ent.name}",
-                "p_properties": {
-                    "entity_type": ent.type,
-                    "tenant_id": str(tenant_id),
-                    "client_id": str(client_id),
-                    **ent.properties,
-                },
-                "p_embedding": emb, "p_status": "active",
+                "p_node_key": upsert_key, "p_type": "Entity",
+                "p_name": upsert_name, "p_description": upsert_desc,
+                "p_properties": upsert_props,
+                "p_embedding": upsert_emb, "p_status": "active",
                 "p_embedding_model": _EMBED_MODEL,
             }).execute()
-            entity_node_ids[ent.name.lower().strip()] = UUID(str(res.data))
+            entity_node_ids[normalized_name] = UUID(str(res.data))
+            if reconciled_onto:
+                logger.info(
+                    "entity reconcile: '%s' (%s) routed onto %s (sim>=%.2f)",
+                    ent.name, ent.type, reconciled_onto, _ENTITY_RECONCILE_THRESHOLD,
+                )
         except Exception as e:
             logger.warning("Entity upsert failed for '%s': %s", ent.name, e)
 
