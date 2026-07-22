@@ -59,18 +59,30 @@ app_entities_router = APIRouter(prefix="/app-entities", tags=["app-entities"])
 # ── Tenant helpers (same pattern as entities_router) ────────────────────────
 
 
-def _require_tenant(request: Request) -> str:
+def _require_tenant(request: Request) -> Optional[str]:
+    """The authenticated tenant from the auth context, or None when auth is off."""
     tenant_id = getattr(request.state, "tenant_id", None)
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="authenticated tenant required")
-    return str(tenant_id)
+    return str(tenant_id) if tenant_id else None
 
 
 def _check_tenant_match(request: Request, body_tenant: UUID) -> str:
+    """Resolve the tenant for a spine request.
+
+    - Auth ON (AuthMiddleware set request.state.tenant_id): the key is
+      authoritative — the body tenant_id must match it, else 403.
+    - Auth OFF (no auth context): fall back to the body tenant_id, exactly like
+      the other body-tenant endpoints (/search/graph, /ingest/*). This keeps the
+      spine endpoints callable when AUTH_ENABLED=false and tightens automatically
+      the moment auth is enabled.
+    """
     auth_tenant = _require_tenant(request)
-    if str(body_tenant) != auth_tenant:
-        raise HTTPException(status_code=403, detail="Tenant mismatch")
-    return auth_tenant
+    if auth_tenant:
+        if body_tenant is not None and str(body_tenant) != auth_tenant:
+            raise HTTPException(status_code=403, detail="Tenant mismatch")
+        return auth_tenant
+    if body_tenant is None:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    return str(body_tenant)
 
 
 def _rpc_scalar(res_data: Any) -> Dict[str, Any]:
