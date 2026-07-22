@@ -11,6 +11,8 @@ processed ingest endpoints instead.
 from __future__ import annotations
 
 import logging
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -294,6 +296,97 @@ def delete_documents(
         metadata={"deleted": deleted, "not_found_count": len(not_found)},
     )
     return {"deleted": deleted, "not_found": not_found}
+
+
+# ── Document preview (signed URL) ─────────────────────────────────────────────
+
+
+_PREVIEW_URL_TTL = 300  # 5 minutes
+
+
+class PreviewUrlResponse(BaseModel):
+    url: str
+    expires_at: str
+    source_type: Optional[str] = None
+    filename: Optional[str] = None
+
+
+@router.get("/documents/{document_id}/preview-url", response_model=PreviewUrlResponse)
+def get_document_preview_url(
+    document_id: str,
+    request: Request,
+    tenant_id: UUID = Query(...),
+    client_id: UUID = Query(...),
+    expires_in: int = Query(_PREVIEW_URL_TTL, ge=30, le=3600),
+) -> PreviewUrlResponse:
+    """
+    Mint a short-lived signed URL for the original document file in storage, so
+    the frontend can fetch + render (docx/pptx/xlsx/pdf) directly — bytes never
+    pass through this service.
+
+    Tenant-scoped: only signs for a document that exists under the given
+    (tenant_id, client_id). (With AUTH_ENABLED=false the caller asserts its own
+    tenant, same open posture as the rest of the data plane — gate behind a key
+    to make this a real boundary.)
+    """
+    sb = get_supabase()
+    try:
+        res = (
+            sb.table("documents")
+            .select("id, source_uri, source_type, title")
+            .eq("id", document_id)
+            .eq("tenant_id", str(tenant_id))
+            .eq("client_id", str(client_id))
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("preview-url document lookup failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    rows = res.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="document not found for tenant/client")
+    doc = rows[0]
+    source_uri = doc.get("source_uri") or ""
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat()
+
+    # Web-ingested documents point at a real URL, not a bucket object.
+    if source_uri.startswith("http://") or source_uri.startswith("https://"):
+        return PreviewUrlResponse(
+            url=source_uri, expires_at=expires_at,
+            source_type=doc.get("source_type"), filename=doc.get("title"),
+        )
+    if not source_uri.startswith("bucket:"):
+        raise HTTPException(status_code=409, detail="document has no retrievable file in storage")
+
+    # source_uri = "bucket:{bucket}/{tenant}/{client}/{filename}"
+    bucket, _, object_path = source_uri[len("bucket:"):].partition("/")
+    if not bucket or not object_path:
+        raise HTTPException(status_code=500, detail="malformed source_uri")
+
+    try:
+        signed = sb.storage.from_(bucket).create_signed_url(object_path, expires_in)
+    except Exception as e:
+        logger.exception("create_signed_url failed for document %s", document_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    url = None
+    if isinstance(signed, dict):
+        url = signed.get("signedURL") or signed.get("signedUrl") or signed.get("signed_url")
+    elif isinstance(signed, str):
+        url = signed
+    if not url:
+        raise HTTPException(status_code=500, detail="failed to sign url")
+    if url.startswith("/"):  # some supabase-py versions return a relative path
+        url = os.environ.get("SUPABASE_URL", "").rstrip("/") + url
+
+    logger.info("preview-url minted document=%s tenant=%s ttl=%ds", document_id, tenant_id, expires_in)
+    return PreviewUrlResponse(
+        url=url, expires_at=expires_at,
+        source_type=doc.get("source_type"),
+        filename=object_path.rsplit("/", 1)[-1],
+    )
 
 
 # ── Document titles ──────────────────────────────────────────────────────────
