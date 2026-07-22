@@ -382,6 +382,8 @@ class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
             metadata["final_score"] = round(float(final_score), 4)
         if source_type is not None:
             metadata["source_type"] = source_type
+        if node.get("rerank_score") is not None:
+            metadata["rerank_score"] = round(float(node["rerank_score"]), 4)
 
         return Document(page_content=content, metadata=metadata)
 

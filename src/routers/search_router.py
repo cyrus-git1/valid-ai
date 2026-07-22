@@ -63,6 +63,7 @@ def _docs_to_result_items(docs) -> List[SearchResultItem]:
             evidence_count=m.get("evidence_count", 0),
             final_score=m.get("final_score"),
             source_type=m.get("source_type"),
+            rerank_score=m.get("rerank_score"),
         ))
     return items
 

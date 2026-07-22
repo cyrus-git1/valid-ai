@@ -56,6 +56,7 @@ class SearchResultItem(BaseModel):
     evidence_count: int = 0
     final_score: Optional[float] = None
     source_type: Optional[str] = None
+    rerank_score: Optional[float] = None   # Cohere cross-encoder relevance (when rerank is on)
 
 
 class GraphSearchResponse(BaseModel):
