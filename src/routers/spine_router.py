@@ -33,6 +33,9 @@ from src.models.api.concepts import (
     ConceptMergeResponse,
     ConceptNearestRequest,
     ConceptNearestResponse,
+    ConceptRelation,
+    ConceptRelationsComputeRequest,
+    ConceptRelationsComputeResponse,
     ConceptsByStudyResponse,
 )
 from src.models.api.app_entities import (
@@ -495,6 +498,66 @@ def concepts_by_study(
         for row in rows
     ]
     return ConceptsByStudyResponse(concepts=concepts)
+
+
+@concepts_router.post("/relations/compute", response_model=ConceptRelationsComputeResponse)
+def compute_concept_relations(
+    body: ConceptRelationsComputeRequest,
+    request: Request,
+) -> ConceptRelationsComputeResponse:
+    """Batch pass: write signed supports/contradicts edges between co-occurring concepts."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    sb = get_supabase()
+    try:
+        res = sb.rpc(
+            "compute_concept_relations",
+            {
+                "p_tenant_id":   tenant_id,
+                "p_study_ids":   [str(s) for s in body.study_ids] if body.study_ids else None,
+                "p_min_cooccur": body.min_cooccur,
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("compute_concept_relations failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+    ret = _rpc_scalar(res.data)
+    return ConceptRelationsComputeResponse(relations_written=int(ret.get("relations_written", 0)))
+
+
+@concepts_router.get("/relations", response_model=List[ConceptRelation])
+def concept_relations(
+    request: Request,
+    tenant_id: UUID = Query(...),
+    study_ids: Optional[List[UUID]] = Query(None),
+    rel_types: Optional[List[str]] = Query(None),
+) -> List[ConceptRelation]:
+    """Read signed concept↔concept relations (cross-concept Tensions), confidence-weighted."""
+    auth_tenant = _check_tenant_match(request, tenant_id)
+    sb = get_supabase()
+    try:
+        res = sb.rpc(
+            "concept_relations",
+            {
+                "p_tenant_id": auth_tenant,
+                "p_study_ids": [str(s) for s in study_ids] if study_ids else None,
+                "p_rel_types": rel_types or ["supports", "contradicts"],
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("concept_relations failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+    rows = res.data or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    return [
+        ConceptRelation(
+            src_concept_id=str(row.get("src_concept_id", "")),
+            dst_concept_id=str(row.get("dst_concept_id", "")),
+            rel_type=str(row.get("rel_type", "")),
+            weight=row.get("weight"),
+        )
+        for row in rows
+    ]
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -10,6 +10,7 @@ in the agent layer; the data plane provides nearest / create / merge primitives.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -100,3 +101,22 @@ class ConceptByStudyItem(BaseModel):
 
 class ConceptsByStudyResponse(BaseModel):
     concepts: List[ConceptByStudyItem] = Field(default_factory=list)
+
+
+# ── relations (signed supports/contradicts) ─────────────────────────────────
+
+
+class ConceptRelationsComputeRequest(TenantOwned):
+    study_ids: List[UUID] = Field(default_factory=list)
+    min_cooccur: int = Field(default=2, ge=1, le=100)
+
+
+class ConceptRelationsComputeResponse(BaseModel):
+    relations_written: int = 0
+
+
+class ConceptRelation(BaseModel):
+    src_concept_id: str
+    dst_concept_id: str
+    rel_type: str
+    weight: Optional[float] = None
