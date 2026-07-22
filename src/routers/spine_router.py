@@ -25,6 +25,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from src.logging_config import get_logger
 from src.models.api.concepts import (
+    ConceptByStudyItem,
     ConceptCandidate,
     ConceptCreateRequest,
     ConceptCreateResponse,
@@ -32,6 +33,7 @@ from src.models.api.concepts import (
     ConceptMergeResponse,
     ConceptNearestRequest,
     ConceptNearestResponse,
+    ConceptsByStudyResponse,
 )
 from src.models.api.app_entities import (
     AppEntityMatch,
@@ -43,6 +45,9 @@ from src.models.api.app_entities import (
 from src.models.api.observations import (
     ObservationRecord,
     ObservationsByConceptResponse,
+    ObservationsByIdsRequest,
+    ObservationsRollupRequest,
+    ObservationsRollupResponse,
     ObservationUpsertRequest,
     ObservationUpsertResponse,
 )
@@ -230,6 +235,96 @@ def observations_by_concept(
     )
 
 
+def _row_to_observation(row: Dict[str, Any]) -> ObservationRecord:
+    return ObservationRecord(
+        node_id=str(row.get("node_id", "")),
+        observation_id=row.get("observation_id"),
+        nl_text=row.get("nl_text"),
+        value=row.get("value"),
+        modality=row.get("modality"),
+        signal_type=row.get("signal_type"),
+        direction=row.get("direction"),
+        prevalence=row.get("prevalence"),
+        confidence=row.get("confidence"),
+        reliability=row.get("reliability"),
+        segment=row.get("segment"),
+        occurred_at=row.get("occurred_at"),
+        source=row.get("source"),
+        study_id=str(row["study_id"]) if row.get("study_id") else None,
+        evidence_chunk_ids=[str(c) for c in (row.get("evidence_chunk_ids") or [])],
+    )
+
+
+@observations_router.post("/by-ids")
+def observations_by_ids(
+    body: ObservationsByIdsRequest,
+    request: Request,
+) -> Dict[str, ObservationRecord]:
+    """Resolve observations by observation_id → map keyed by observation_id.
+
+    Backs the agent's /spine/hydrate (stateless). Tenant + study scoped.
+    """
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    sb = get_supabase()
+    try:
+        res = sb.rpc(
+            "observations_by_ids",
+            {
+                "p_tenant_id":       tenant_id,
+                "p_observation_ids": body.ids or [],
+                "p_study_ids":       [str(s) for s in body.study_ids] if body.study_ids else None,
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("observations_by_ids failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+
+    rows = res.data or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    out: Dict[str, ObservationRecord] = {}
+    for row in rows:
+        rec = _row_to_observation(row)
+        if rec.observation_id:
+            out[rec.observation_id] = rec
+    return out
+
+
+@observations_router.post("/rollup", response_model=ObservationsRollupResponse)
+def observations_rollup(
+    body: ObservationsRollupRequest,
+    request: Request,
+) -> ObservationsRollupResponse:
+    """The scope cube + top-N evidence per concept, in one call.
+
+    Returns RAW direction counts + n_sum (agent applies the sign/threshold/
+    divergence policy). Subsumes /concepts/by-study and kills the per-concept loop.
+    """
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    sb = get_supabase()
+    rng = body.range
+    try:
+        res = sb.rpc(
+            "observations_rollup",
+            {
+                "p_tenant_id":     tenant_id,
+                "p_study_ids":     [str(s) for s in body.study_ids] if body.study_ids else None,
+                "p_range_from":    rng.from_ if rng else None,
+                "p_range_to":      rng.to if rng else None,
+                "p_top_evidence":  body.top_evidence,
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("observations_rollup failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+
+    ret = _rpc_scalar(res.data)
+    return ObservationsRollupResponse(
+        cube=ret.get("cube") or [],
+        evidence=ret.get("evidence") or {},
+    )
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Concepts
 # ════════════════════════════════════════════════════════════════════════════
@@ -367,6 +462,39 @@ def concepts_merge(
         rewired_count=int(ret.get("rewired_count", 0)),
         surviving_member_count=int(ret.get("surviving_member_count", 0)),
     )
+
+
+@concepts_router.get("/by-study", response_model=ConceptsByStudyResponse)
+def concepts_by_study(
+    request: Request,
+    tenant_id: UUID = Query(...),
+    study_ids: Optional[List[UUID]] = Query(None),
+    client_id: Optional[UUID] = Query(None),
+) -> ConceptsByStudyResponse:
+    """Distinct concepts that have >=1 in-scope observation. Backs the synthesis board."""
+    auth_tenant = _check_tenant_match(request, tenant_id)
+    sb = get_supabase()
+    try:
+        res = sb.rpc(
+            "concepts_by_study",
+            {
+                "p_tenant_id": auth_tenant,
+                "p_study_ids": [str(s) for s in study_ids] if study_ids else None,
+                "p_client_id": str(client_id) if client_id else None,
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("concepts_by_study failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+
+    rows = res.data or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    concepts = [
+        ConceptByStudyItem(concept_id=str(row.get("concept_id", "")), label=row.get("label"))
+        for row in rows
+    ]
+    return ConceptsByStudyResponse(concepts=concepts)
 
 
 # ════════════════════════════════════════════════════════════════════════════

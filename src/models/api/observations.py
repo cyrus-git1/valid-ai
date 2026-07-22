@@ -117,3 +117,36 @@ class ObservationRecord(BaseModel):
 class ObservationsByConceptResponse(BaseModel):
     concept_id: str
     observations: List[ObservationRecord] = Field(default_factory=list)
+
+
+# ── by-ids (hydrate) ────────────────────────────────────────────────────────
+
+
+class ObservationsByIdsRequest(TenantOwned):
+    ids: List[str] = Field(default_factory=list)
+    study_ids: List[UUID] = Field(default_factory=list)
+
+
+# response: a map keyed by observation_id → record (matches the agent's contract)
+ObservationsByIdsResponse = Dict[str, ObservationRecord]
+
+
+# ── rollup (scope cube) ─────────────────────────────────────────────────────
+
+
+class RollupRange(BaseModel):
+    from_: Optional[str] = Field(default=None, alias="from")
+    to: Optional[str] = None
+    model_config = {"populate_by_name": True}
+
+
+class ObservationsRollupRequest(TenantOwned):
+    study_ids: List[UUID] = Field(default_factory=list)
+    range: Optional[RollupRange] = None
+    top_evidence: int = Field(default=5, ge=1, le=100)
+
+
+class ObservationsRollupResponse(BaseModel):
+    # RAW aggregates — the agent applies the sign/threshold/divergence policy.
+    cube: List[Dict[str, Any]] = Field(default_factory=list)          # concept×study×modality×persona×period×direction → obs_count,n_sum
+    evidence: Dict[str, List[str]] = Field(default_factory=dict)      # concept_id → top-N observation_ids

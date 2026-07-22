@@ -88,3 +88,15 @@ class ConceptMergeResponse(BaseModel):
     merged: bool
     rewired_count: int = 0
     surviving_member_count: int = 0
+
+
+# ── by-study ────────────────────────────────────────────────────────────────
+
+
+class ConceptByStudyItem(BaseModel):
+    concept_id: str
+    label: Optional[str] = None
+
+
+class ConceptsByStudyResponse(BaseModel):
+    concepts: List[ConceptByStudyItem] = Field(default_factory=list)
