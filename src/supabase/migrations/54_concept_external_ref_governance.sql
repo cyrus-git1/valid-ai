@@ -20,6 +20,9 @@
 -- Ends with NOTIFY pgrst 'reload schema'.
 
 -- ── R2a: nearest_concepts + external_ref ────────────────────────────────────
+-- Adding an output column changes the return type → must drop before recreate.
+drop function if exists public.nearest_concepts(uuid, vector, text[], int, text) cascade;
+
 create or replace function public.nearest_concepts(
   p_tenant_id        uuid,
   p_embedding        vector(1536),
@@ -73,6 +76,8 @@ $$;
 
 
 -- ── R2b: concepts_by_study + external_ref ───────────────────────────────────
+drop function if exists public.concepts_by_study(uuid, uuid[], uuid) cascade;
+
 create or replace function public.concepts_by_study(
   p_tenant_id uuid,
   p_study_ids uuid[]  default null,
