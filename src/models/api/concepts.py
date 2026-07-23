@@ -39,6 +39,7 @@ class ConceptCandidate(BaseModel):
     canonical_label: Optional[str] = None
     alias_set: Optional[Dict[str, Any]] = None
     merge_confidence: Optional[float] = None
+    external_ref: Optional[str] = None   # governed tag id, or null for a candidate
     similarity: Optional[float] = None
     score: Optional[float] = None
 
@@ -97,6 +98,7 @@ class ConceptMergeResponse(BaseModel):
 class ConceptByStudyItem(BaseModel):
     concept_id: str
     label: Optional[str] = None
+    external_ref: Optional[str] = None   # governed tag id, or null for a candidate
 
 
 class ConceptsByStudyResponse(BaseModel):
@@ -120,3 +122,31 @@ class ConceptRelation(BaseModel):
     dst_concept_id: str
     rel_type: str
     weight: Optional[float] = None
+
+
+# ── governance: mirror transcript_tags / graduate candidates ────────────────
+
+
+class MirrorTagRequest(TenantOwned):
+    tag_id: UUID
+    label: str = Field(min_length=1)
+    description: Optional[str] = None
+    embedding_text: Optional[str] = None
+    embedding: Optional[List[float]] = None
+
+
+class MirrorTagResponse(BaseModel):
+    concept_id: str
+    external_ref: str
+    node_key: str
+
+
+class LinkTagRequest(TenantOwned):
+    concept_id: UUID
+    tag_id: UUID
+
+
+class LinkTagResponse(BaseModel):
+    linked: bool
+    concept_id: str
+    external_ref: str

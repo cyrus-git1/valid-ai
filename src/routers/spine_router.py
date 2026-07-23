@@ -37,6 +37,10 @@ from src.models.api.concepts import (
     ConceptRelationsComputeRequest,
     ConceptRelationsComputeResponse,
     ConceptsByStudyResponse,
+    LinkTagRequest,
+    LinkTagResponse,
+    MirrorTagRequest,
+    MirrorTagResponse,
 )
 from src.models.api.app_entities import (
     AppEntityMatch,
@@ -385,6 +389,7 @@ def concepts_nearest(
             canonical_label=row.get("canonical_label"),
             alias_set=row.get("alias_set"),
             merge_confidence=row.get("merge_confidence"),
+            external_ref=row.get("external_ref"),
             similarity=row.get("similarity"),
             score=row.get("final_score"),
         )
@@ -494,10 +499,79 @@ def concepts_by_study(
     if isinstance(rows, dict):
         rows = [rows]
     concepts = [
-        ConceptByStudyItem(concept_id=str(row.get("concept_id", "")), label=row.get("label"))
+        ConceptByStudyItem(
+            concept_id=str(row.get("concept_id", "")),
+            label=row.get("label"),
+            external_ref=row.get("external_ref"),
+        )
         for row in rows
     ]
     return ConceptsByStudyResponse(concepts=concepts)
+
+
+@concepts_router.post("/mirror-tag", response_model=MirrorTagResponse)
+def mirror_tag(
+    body: MirrorTagRequest,
+    request: Request,
+) -> MirrorTagResponse:
+    """Mirror a transcript_tag into the graph as a governed Concept node (id = tag_id,
+    external_ref = tag_id). Idempotent; refresh label/description/embedding on edits."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    client_id = str(body.client_id) if body.client_id else None
+    sb = get_supabase()
+    text = body.embedding_text or " ".join(filter(None, [body.label, body.description]))
+    embedding = _resolve_embedding(tenant_id=tenant_id, supplied=body.embedding, text=text)
+    try:
+        res = sb.rpc(
+            "mirror_tag_concept",
+            {
+                "p_tenant_id":       tenant_id,
+                "p_client_id":       client_id,
+                "p_tag_id":          str(body.tag_id),
+                "p_label":           body.label,
+                "p_description":     body.description,
+                "p_embedding":       embedding,
+                "p_embedding_model": _EMBED_MODEL,
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("mirror_tag_concept failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+    ret = _rpc_scalar(res.data)
+    return MirrorTagResponse(
+        concept_id=str(ret.get("concept_id", "")),
+        external_ref=str(ret.get("external_ref", "")),
+        node_key=str(ret.get("node_key", "")),
+    )
+
+
+@concepts_router.post("/link-tag", response_model=LinkTagResponse)
+def link_tag(
+    body: LinkTagRequest,
+    request: Request,
+) -> LinkTagResponse:
+    """Stamp external_ref on an existing candidate concept (graduation in place —
+    preserves its accumulated observations)."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    sb = get_supabase()
+    try:
+        res = sb.rpc(
+            "link_concept_tag",
+            {
+                "p_tenant_id":  tenant_id,
+                "p_concept_id": str(body.concept_id),
+                "p_tag_id":     str(body.tag_id),
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("link_concept_tag failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+    ret = _rpc_scalar(res.data)
+    return LinkTagResponse(
+        linked=bool(ret.get("linked", False)),
+        concept_id=str(ret.get("concept_id", body.concept_id)),
+        external_ref=str(ret.get("external_ref", "")),
+    )
 
 
 @concepts_router.post("/relations/compute", response_model=ConceptRelationsComputeResponse)
