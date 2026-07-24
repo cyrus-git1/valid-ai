@@ -259,6 +259,7 @@ def _row_to_observation(row: Dict[str, Any]) -> ObservationRecord:
         source=row.get("source"),
         study_id=str(row["study_id"]) if row.get("study_id") else None,
         evidence_chunk_ids=[str(c) for c in (row.get("evidence_chunk_ids") or [])],
+        evidence=row.get("evidence"),
     )
 
 

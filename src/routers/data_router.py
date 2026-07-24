@@ -389,6 +389,72 @@ def get_document_preview_url(
     )
 
 
+# ── Survey outputs (questions for question-alignment) ─────────────────────────
+
+
+class SurveyQuestions(BaseModel):
+    survey_id: str
+    output_type: str
+    study_id: Optional[str] = None            # from metadata.study_id (no native column)
+    questions: List[Dict[str, Any]] = Field(default_factory=list)   # agent-authored shape
+    created_at: Optional[str] = None
+
+
+class SurveyOutputsResponse(BaseModel):
+    surveys: List[SurveyQuestions] = Field(default_factory=list)
+
+
+@router.get("/survey-outputs", response_model=SurveyOutputsResponse)
+def get_survey_outputs(
+    request: Request,
+    tenant_id: UUID = Query(...),
+    client_id: Optional[UUID] = Query(None),
+    study_id: Optional[UUID] = Query(None),
+    output_type: Optional[str] = Query(None, description="'survey' | 'recommendation' | 'follow_up'"),
+) -> SurveyOutputsResponse:
+    """
+    Read generated survey outputs (their `questions` array) for question alignment.
+
+    Caveats: survey_outputs has no native study_id (study is read from
+    metadata.study_id if the writer set it) and rows expire after 7 days; the
+    `questions` items are shaped by the writing service (the agent) — this returns
+    them verbatim for the agent to map to {question_id, text, type}.
+    """
+    sb = get_supabase()
+    try:
+        q = (
+            sb.table("survey_outputs")
+            .select("id, output_type, questions, metadata, created_at")
+            .eq("tenant_id", str(tenant_id))
+            .gte("expires_at", datetime.now(timezone.utc).isoformat())
+            .order("created_at", desc=True)
+            .limit(200)
+        )
+        if client_id is not None:
+            q = q.eq("client_id", str(client_id))
+        if output_type:
+            q = q.eq("output_type", output_type)
+        rows = q.execute().data or []
+    except Exception as e:
+        logger.exception("survey-outputs read failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    surveys: List[SurveyQuestions] = []
+    for r in rows:
+        meta = r.get("metadata") or {}
+        sid = meta.get("study_id")
+        if study_id is not None and str(sid) != str(study_id):
+            continue
+        surveys.append(SurveyQuestions(
+            survey_id=str(r.get("id", "")),
+            output_type=r.get("output_type", ""),
+            study_id=str(sid) if sid else None,
+            questions=r.get("questions") or [],
+            created_at=str(r["created_at"]) if r.get("created_at") else None,
+        ))
+    return SurveyOutputsResponse(surveys=surveys)
+
+
 # ── Document titles ──────────────────────────────────────────────────────────
 
 

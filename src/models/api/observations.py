@@ -112,6 +112,7 @@ class ObservationRecord(BaseModel):
     source: Optional[Dict[str, Any]] = None
     study_id: Optional[str] = None
     evidence_chunk_ids: List[str] = Field(default_factory=list)
+    evidence: Optional[Dict[str, Any]] = None   # primary quote {text, speaker?, offset_ms?} (by-ids)
 
 
 class ObservationsByConceptResponse(BaseModel):
