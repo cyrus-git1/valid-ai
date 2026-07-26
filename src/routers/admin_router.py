@@ -329,6 +329,203 @@ def stats(
     )
 
 
+# ── Governance backfill: mirror seeded taxonomy + re-embed null-embedding rows ──
+#
+# Two operator-triggered sweeps that close the governance loop after an embedder
+# outage (see migration 56). Both are system operations — the embedding cost is
+# NOT charged to the tenant's daily quota (tenant_id=None on the embed call), so a
+# large backfill can't exhaust a tenant's budget or fail halfway on a quota gate.
+#
+# Ordering matters (agent-layer contract):
+#   1. /admin/mirror-taxonomy → governed Concept nodes exist WITH embeddings
+#   2. /admin/reembed         → outage-era null-embedding rows become resolvable
+#   3. (app) /spine/backfill  → observations re-resolve to the now-embedded
+#                               governed nodes + candidates graduate
+#
+# NOTE: the data plane has no local codebook table (`transcript_tags` lives in the
+# app/agent layer), so mirror-taxonomy takes the seed tags in the BODY rather than
+# self-sourcing — the caller supplies {tag_id, label, description}. This is the
+# batch form of the already-shipped per-tag POST /concepts/mirror-tag.
+
+
+def _rpc_scalar(data):
+    """Normalize a scalar/jsonb RPC result (PostgREST may list-wrap it)."""
+    if isinstance(data, list):
+        data = data[0] if data else None
+    return data
+
+
+class TaxonomyTag(BaseModel):
+    tag_id: str = Field(description="transcript_tags uuid — becomes the concept node id + external_ref")
+    label: str = Field(min_length=1)
+    description: Optional[str] = None
+
+
+class MirrorTaxonomyRequest(BaseModel):
+    tenant_id: str
+    client_id: Optional[str] = None
+    tags: List[TaxonomyTag] = Field(default_factory=list, description="Seeded codebook tags to mirror")
+
+
+class MirrorTaxonomyResultItem(BaseModel):
+    tag_id: str
+    concept_id: str = ""
+    external_ref: str = ""
+    embedded: bool = False
+    error: Optional[str] = None
+
+
+class MirrorTaxonomyResponse(BaseModel):
+    tenant_id: str
+    mirrored: int
+    embedded: int
+    failed: int
+    results: List[MirrorTaxonomyResultItem]
+
+
+@router.post("/mirror-taxonomy", response_model=MirrorTaxonomyResponse)
+def mirror_taxonomy(body: MirrorTaxonomyRequest, request: Request) -> MirrorTaxonomyResponse:
+    """Batch-mirror seeded taxonomy tags into the graph as governed Concept nodes
+    (node id = tag id, external_ref = tag id), each embedded on label+description
+    so observations can resolve to them via /concepts/nearest. Idempotent per tag.
+    """
+    from src.routers.ingest_router import _EMBED_MODEL, _embed_in_batches
+
+    try:
+        tenant_id = str(UUID(body.tenant_id))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid tenant_id: {e}")
+    client_id: Optional[str] = None
+    if body.client_id:
+        try:
+            client_id = str(UUID(body.client_id))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid client_id: {e}")
+
+    if not body.tags:
+        return MirrorTaxonomyResponse(tenant_id=tenant_id, mirrored=0, embedded=0, failed=0, results=[])
+
+    sb = get_supabase()
+    # One embed batch for the whole seed. System op → not billed to the tenant quota.
+    texts = [
+        (f"{t.label}. {t.description}".strip() if t.description else t.label)
+        for t in body.tags
+    ]
+    try:
+        embeddings = _embed_in_batches(texts, tenant_id=None)
+    except Exception as ex:
+        logger.exception("mirror_taxonomy embedding failed tenant=%s", tenant_id)
+        raise HTTPException(status_code=502, detail=f"Embedding provider error: {ex}")
+
+    results: List[MirrorTaxonomyResultItem] = []
+    mirrored = embedded = failed = 0
+    for tag, emb in zip(body.tags, embeddings):
+        try:
+            tag_uuid = str(UUID(tag.tag_id))
+        except ValueError:
+            failed += 1
+            results.append(MirrorTaxonomyResultItem(tag_id=tag.tag_id, error="invalid tag_id (not a uuid)"))
+            continue
+        try:
+            res = sb.rpc(
+                "mirror_tag_concept",
+                {
+                    "p_tenant_id": tenant_id,
+                    "p_client_id": client_id,
+                    "p_tag_id": tag_uuid,
+                    "p_label": tag.label,
+                    "p_description": tag.description,
+                    "p_embedding": emb,
+                    "p_embedding_model": _EMBED_MODEL,
+                },
+            ).execute()
+            ret = _rpc_scalar(res.data) or {}
+            mirrored += 1
+            embedded += 1
+            results.append(MirrorTaxonomyResultItem(
+                tag_id=tag.tag_id,
+                concept_id=str(ret.get("concept_id", "")),
+                external_ref=str(ret.get("external_ref", tag_uuid)),
+                embedded=True,
+            ))
+        except Exception as ex:
+            failed += 1
+            logger.exception("mirror_tag_concept failed tenant=%s tag=%s", tenant_id, tag.tag_id)
+            results.append(MirrorTaxonomyResultItem(tag_id=tag.tag_id, error=str(ex)))
+
+    logger.info("admin.mirror_taxonomy tenant=%s mirrored=%d failed=%d", tenant_id, mirrored, failed)
+    return MirrorTaxonomyResponse(
+        tenant_id=tenant_id, mirrored=mirrored, embedded=embedded, failed=failed, results=results,
+    )
+
+
+class ReembedRequest(BaseModel):
+    tenant_id: str
+    types: Optional[List[str]] = Field(
+        default=None, description="Node types to re-embed, e.g. ['Observation','Concept']. None = all embeddable."
+    )
+    limit: int = Field(default=500, ge=1, le=2000, description="Max nodes to re-embed this sweep (chunk large backfills).")
+
+
+class ReembedResponse(BaseModel):
+    tenant_id: str
+    scanned: int          # null-embedding nodes picked this sweep
+    reembedded: int       # rows actually filled
+    remaining: int        # null-embedding nodes still left after this sweep
+    embedding_model: str
+
+
+@router.post("/reembed", response_model=ReembedResponse)
+def reembed(body: ReembedRequest, request: Request) -> ReembedResponse:
+    """Re-embed nodes that have a null embedding (e.g. written during an embedder
+    outage), making them resolvable via nearest/search again. Idempotent and
+    chunkable via `limit`; re-run until `remaining` is 0."""
+    from src.routers.ingest_router import _EMBED_MODEL, _embed_in_batches
+
+    try:
+        tenant_id = str(UUID(body.tenant_id))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid tenant_id: {e}")
+    types = body.types or None
+
+    sb = get_supabase()
+    cands = (sb.rpc(
+        "reembed_candidates",
+        {"p_tenant_id": tenant_id, "p_types": types, "p_limit": body.limit},
+    ).execute().data) or []
+    scanned = len(cands)
+
+    reembedded = 0
+    if scanned:
+        ids = [c["id"] for c in cands]
+        texts = [(c.get("embed_text") or "") for c in cands]
+        try:
+            embeddings = _embed_in_batches(texts, tenant_id=None)  # system op — not billed to tenant
+        except Exception as ex:
+            logger.exception("reembed embedding failed tenant=%s", tenant_id)
+            raise HTTPException(status_code=502, detail=f"Embedding provider error: {ex}")
+        applied = sb.rpc(
+            "reembed_apply_batch",
+            {
+                "p_tenant_id": tenant_id,
+                "p_ids": ids,
+                "p_embeddings": embeddings,
+                "p_embedding_model": _EMBED_MODEL,
+            },
+        ).execute().data
+        reembedded = int(_rpc_scalar(applied) or 0)
+
+    q = sb.table("kg_nodes").select("id", count="exact").eq("tenant_id", tenant_id).is_("embedding", "null")
+    if types:
+        q = q.in_("type", types)
+    remaining = q.execute().count or 0
+
+    logger.info("admin.reembed tenant=%s scanned=%d reembedded=%d remaining=%d", tenant_id, scanned, reembedded, remaining)
+    return ReembedResponse(
+        tenant_id=tenant_id, scanned=scanned, reembedded=reembedded, remaining=remaining, embedding_model=_EMBED_MODEL,
+    )
+
+
 @router.post("/maintenance/run", response_model=MaintenanceRunResponse)
 def run_maintenance(req: MaintenanceRunRequest) -> MaintenanceRunResponse:
     """Run KG pruning and orphan cleanup for one client or every client in a tenant."""
