@@ -150,3 +150,22 @@ class LinkTagResponse(BaseModel):
     linked: bool
     concept_id: str
     external_ref: str
+
+
+class GraduateRequest(TenantOwned):
+    """Promote a candidate concept to governed in ONE server-side call: create (or
+    get) the transcript_tags codebook row, then stamp external_ref on the existing
+    candidate node in place. Removes the agent's last direct Supabase write."""
+
+    concept_id: UUID = Field(description="The candidate node crossing the threshold")
+    label: str = Field(min_length=1, description="Proposed codebook entry")
+    description: Optional[str] = None
+    cluster_id: Optional[str] = None
+    evidence_ids: Optional[List[str]] = Field(default=None, description="Provenance (optional)")
+
+
+class GraduateResponse(BaseModel):
+    tag_id: str
+    concept_id: str
+    external_ref: str
+    created: bool   # True when a new codebook row was minted; False on idempotent re-sweep

@@ -37,6 +37,8 @@ from src.models.api.concepts import (
     ConceptRelationsComputeRequest,
     ConceptRelationsComputeResponse,
     ConceptsByStudyResponse,
+    GraduateRequest,
+    GraduateResponse,
     LinkTagRequest,
     LinkTagResponse,
     MirrorTagRequest,
@@ -572,6 +574,44 @@ def link_tag(
         linked=bool(ret.get("linked", False)),
         concept_id=str(ret.get("concept_id", body.concept_id)),
         external_ref=str(ret.get("external_ref", "")),
+    )
+
+
+@concepts_router.post("/graduate", response_model=GraduateResponse)
+def graduate(
+    body: GraduateRequest,
+    request: Request,
+) -> GraduateResponse:
+    """Graduate a candidate to governed in ONE server-side call: create-or-get the
+    transcript_tags codebook row (idempotent on tenant+label), then stamp
+    external_ref on the existing candidate node in place (preserves its accumulated
+    observations). This is the whole graduation write — the agent no longer touches
+    Supabase directly. No embedding (the candidate node already carries one)."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    client_id = str(body.client_id) if body.client_id else None
+    sb = get_supabase()
+    try:
+        res = sb.rpc(
+            "graduate_concept",
+            {
+                "p_tenant_id":    tenant_id,
+                "p_concept_id":   str(body.concept_id),
+                "p_label":        body.label,
+                "p_description":  body.description,
+                "p_client_id":    client_id,
+                "p_cluster_id":   body.cluster_id,
+                "p_evidence_ids": body.evidence_ids or [],
+            },
+        ).execute()
+    except Exception as ex:
+        logger.exception("graduate_concept failed")
+        raise HTTPException(status_code=500, detail=str(ex))
+    ret = _rpc_scalar(res.data) or {}
+    return GraduateResponse(
+        tag_id=str(ret.get("tag_id", "")),
+        concept_id=str(ret.get("concept_id", body.concept_id)),
+        external_ref=str(ret.get("external_ref", "")),
+        created=bool(ret.get("created", False)),
     )
 
 
