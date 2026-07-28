@@ -63,6 +63,7 @@ def test_graduate_creates_tag_and_links(client):
     })
     assert r.status_code == 200, r.text
     body = r.json()
+    assert body["status"] == "graduated"    # success marker the agent keys on
     assert body["tag_id"] == TAG
     assert body["external_ref"] == TAG      # governed: node now carries the tag uuid
     assert body["concept_id"] == CONCEPT

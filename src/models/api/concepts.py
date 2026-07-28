@@ -165,6 +165,7 @@ class GraduateRequest(TenantOwned):
 
 
 class GraduateResponse(BaseModel):
+    status: str = "graduated"   # success marker for the agent's contract
     tag_id: str
     concept_id: str
     external_ref: str
