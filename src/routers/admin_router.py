@@ -526,6 +526,77 @@ def reembed(body: ReembedRequest, request: Request) -> ReembedResponse:
     )
 
 
+# ── Dedup / purge sweeps (formalize the manual cleanups; see migration 58) ──────
+
+
+class RetireOrphansRequest(BaseModel):
+    tenant_id: str
+
+
+class RetireOrphansResponse(BaseModel):
+    retired: int
+    retired_labels: List[str] = Field(default_factory=list)
+
+
+@router.post("/retire-orphans", response_model=RetireOrphansResponse)
+def retire_orphans(body: RetireOrphansRequest, request: Request) -> RetireOrphansResponse:
+    """Delete CANDIDATE concept nodes with 0 live linked observations. Governed
+    nodes (external_ref set) are preserved — a governed theme with no observations
+    is a codebook mirror awaiting resolution, not an orphan. Idempotent. Run after
+    a re-emit re-points duplicate candidates' observations onto the governed node."""
+    try:
+        tenant_id = str(UUID(body.tenant_id))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid tenant_id: {e}")
+    sb = get_supabase()
+    try:
+        res = sb.rpc("retire_orphan_concepts", {"p_tenant_id": tenant_id}).execute()
+    except Exception as ex:
+        logger.exception("retire_orphan_concepts failed tenant=%s", tenant_id)
+        raise HTTPException(status_code=500, detail=str(ex))
+    ret = _rpc_scalar(res.data) or {}
+    labels = [l for l in (ret.get("retired_labels") or []) if l is not None]
+    logger.info("admin.retire_orphans tenant=%s retired=%s", tenant_id, ret.get("retired", 0))
+    return RetireOrphansResponse(retired=int(ret.get("retired", 0)), retired_labels=labels)
+
+
+class PurgeStudyRequest(BaseModel):
+    tenant_id: str
+    study_id: str
+
+
+class PurgeStudyResponse(BaseModel):
+    observations_deleted: int
+    concepts_deleted: int
+
+
+@router.post("/purge-study", response_model=PurgeStudyResponse)
+def purge_study(body: PurgeStudyRequest, request: Request) -> PurgeStudyResponse:
+    """Delete all observations for a study, then retire the candidate concepts those
+    observations left orphaned (governed preserved). Idempotent."""
+    try:
+        tenant_id = str(UUID(body.tenant_id))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid tenant_id: {e}")
+    try:
+        study_id = str(UUID(body.study_id))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid study_id: {e}")
+    sb = get_supabase()
+    try:
+        res = sb.rpc("purge_study", {"p_tenant_id": tenant_id, "p_study_id": study_id}).execute()
+    except Exception as ex:
+        logger.exception("purge_study failed tenant=%s study=%s", tenant_id, study_id)
+        raise HTTPException(status_code=500, detail=str(ex))
+    ret = _rpc_scalar(res.data) or {}
+    logger.info("admin.purge_study tenant=%s study=%s obs=%s concepts=%s",
+                tenant_id, study_id, ret.get("observations_deleted", 0), ret.get("concepts_deleted", 0))
+    return PurgeStudyResponse(
+        observations_deleted=int(ret.get("observations_deleted", 0)),
+        concepts_deleted=int(ret.get("concepts_deleted", 0)),
+    )
+
+
 @router.post("/maintenance/run", response_model=MaintenanceRunResponse)
 def run_maintenance(req: MaintenanceRunRequest) -> MaintenanceRunResponse:
     """Run KG pruning and orphan cleanup for one client or every client in a tenant."""
