@@ -415,10 +415,16 @@ def get_survey_outputs(
     """
     Read generated survey outputs (their `questions` array) for question alignment.
 
+    BEST-EFFORT TRANSIENT CACHE — NOT the durable source of record. Rows expire
+    after 7 days (see cleanup_expired_survey_outputs), so studies older than that
+    return []. The durable survey definitions live in the app (frontend) survey
+    table; backfill / re-govern MUST pass `survey_outputs` INLINE and must never
+    rely on this endpoint. Re-resolution of already-emitted observations does not
+    read survey_outputs at all.
+
     Caveats: survey_outputs has no native study_id (study is read from
-    metadata.study_id if the writer set it) and rows expire after 7 days; the
-    `questions` items are shaped by the writing service (the agent) — this returns
-    them verbatim for the agent to map to {question_id, text, type}.
+    metadata.study_id if the writer set it); the `questions` items are shaped by
+    the writing service — returned verbatim to map to {question_id, text, type}.
     """
     sb = get_supabase()
     try:
