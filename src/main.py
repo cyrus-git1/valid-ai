@@ -37,6 +37,7 @@ from src.middleware.request_id import RequestIdMiddleware
 from src.routers.admin_router import router as admin_router
 from src.routers.data_router import router as data_router
 from src.routers.entities_router import router as entities_router
+from src.routers.genomes_router import router as genomes_router
 from src.routers.entities_router import kg_router as entities_kg_router
 from src.routers.ingest_router import router as ingest_router
 from src.routers.memory_router import router as memory_router
@@ -102,6 +103,7 @@ app.include_router(observations_router)
 app.include_router(concepts_router)
 app.include_router(app_entities_router)
 app.include_router(memory_router)
+app.include_router(genomes_router)
 
 
 @app.get("/", tags=["root"])
