@@ -461,6 +461,46 @@ def get_survey_outputs(
     return SurveyOutputsResponse(surveys=surveys)
 
 
+# ── KG entities (agent business glossary) ────────────────────────────────────
+
+
+class KgEntity(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    description: Optional[str] = None
+
+
+class KgEntitiesResponse(BaseModel):
+    entities: List[KgEntity]
+
+
+@router.get("/kg-entities", response_model=KgEntitiesResponse)
+def get_kg_entities(
+    request: Request,
+    tenant_id: UUID = Query(...),
+    client_id: UUID = Query(...),
+    limit: int = Query(30, ge=1, le=200),
+) -> KgEntitiesResponse:
+    """Top active KG entities (name/type/description) for a tenant+client — powers
+    the agent's per-tenant business glossary. Best-effort read; the agent degrades
+    to no glossary on any failure."""
+    sb = get_supabase()
+    try:
+        rows = (
+            sb.table("kg_nodes")
+            .select("name, type, description")
+            .eq("tenant_id", str(tenant_id))
+            .eq("client_id", str(client_id))
+            .eq("status", "active")
+            .limit(limit)
+            .execute()
+        ).data or []
+    except Exception as e:
+        logger.warning("kg-entities read failed: %s", e)
+        rows = []
+    return KgEntitiesResponse(entities=[KgEntity(**r) for r in rows])
+
+
 # ── Document titles ──────────────────────────────────────────────────────────
 
 
