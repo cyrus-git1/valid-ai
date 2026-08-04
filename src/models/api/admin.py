@@ -10,6 +10,7 @@ class HealthResponse(BaseModel):
     status: str             # "ok" | "degraded"
     supabase: bool
     openai: bool
+    reranker: bool = False  # cross-encoder rerank available? (False = degraded retrieval, not an outage)
     detail: Optional[str] = None
 
 

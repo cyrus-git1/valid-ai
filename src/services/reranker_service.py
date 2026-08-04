@@ -45,6 +45,14 @@ class RerankerService:
                 logger.warning("RerankerService: COHERE_API_KEY set but `cohere` package not installed — falling back to no-op")
             except Exception as e:
                 logger.warning("RerankerService: cohere init failed: %s — falling back to no-op", e)
+        else:
+            # The previously-silent case: no key at all → reranking is OFF and the
+            # "cross-encoder rerank" degrades to hybrid+MMR order. Make that
+            # visible at startup instead of disappearing without a trace.
+            logger.warning(
+                "RerankerService: COHERE_API_KEY not set — reranking DISABLED "
+                "(retrieval returns hybrid+MMR order, no cross-encoder pass)"
+            )
 
     def is_available(self) -> bool:
         return self._cohere_client is not None

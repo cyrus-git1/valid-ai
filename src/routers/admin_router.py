@@ -246,12 +246,24 @@ def health() -> HealthResponse:
     if not openai_ok:
         detail = (detail or "") + " OPENAI_API_KEY missing."
 
+    # Reranker is OPTIONAL — its absence degrades retrieval quality but is not an
+    # outage, so it is surfaced here (not folded into `status`). This is the
+    # health signal for the previously-silent "rerank quietly disabled" case.
+    try:
+        from src.services.reranker_service import get_reranker
+        reranker_ok = get_reranker().is_available()
+    except Exception:
+        reranker_ok = False
+    if not reranker_ok:
+        detail = (detail or "") + " Reranker disabled (no COHERE_API_KEY)."
+
     overall = "ok" if (sb_ok and openai_ok) else "degraded"
 
     return HealthResponse(
         status=overall,
         supabase=sb_ok,
         openai=openai_ok,
+        reranker=reranker_ok,
         detail=detail,
     )
 

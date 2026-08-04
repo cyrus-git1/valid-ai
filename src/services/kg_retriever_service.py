@@ -51,6 +51,7 @@ JsonDict = Dict[str, Any]
 # Retrieval pipeline tuning (hybrid pool → rerank → MMR).
 _RERANK_POOL = 25   # rerank only the top-N of the hybrid pool — the main cost/latency lever
 _MMR_LAMBDA = 0.7   # MMR relevance<->diversity trade-off (1.0 = pure relevance)
+_RERANK_SKIP_WARNED = False  # one-shot latch so a silent rerank-skip warns once per process
 
 
 class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
@@ -169,6 +170,15 @@ class KGRetrieverService(KGRetrieverConfig, BaseRetriever):
                         candidates=candidates[:_RERANK_POOL],
                         text_field="content",
                         top_n=_RERANK_POOL,
+                    )
+                elif not _RERANK_SKIP_WARNED:
+                    # Rerank was REQUESTED but silently skipped (no backend). Warn
+                    # once per process so "why is retrieval worse" is diagnosable
+                    # instead of invisible.
+                    globals()["_RERANK_SKIP_WARNED"] = True
+                    logger.warning(
+                        "kg_retriever: use_rerank=True but no reranker available "
+                        "— serving hybrid+MMR order (see /admin/health.reranker)"
                     )
 
             # ── 3. MMR select — relevance + diversity ──────────────────────
