@@ -348,8 +348,19 @@ def _resolve_embedding(
     if text:
         try:
             return _embed_in_batches([text], tenant_id=tenant_id)[0]
+        except HTTPException:
+            raise
         except Exception as ex:
-            logger.warning("concept embedding failed: %s", ex)
+            # The caller DID supply text — a failure here is the embedding
+            # PROVIDER being unavailable (OpenAI outage / exhausted quota), NOT a
+            # malformed request. Surface it honestly as 502 with the real cause.
+            # Previously this returned None, so the caller raised a misleading
+            # 400 "provide query_text or embedding" — which disguised a billing
+            # outage as a client contract error and buried the real reason.
+            logger.error("concept embedding failed (provider): %s", ex, exc_info=True)
+            raise HTTPException(
+                status_code=502, detail=f"embedding provider unavailable: {ex}"
+            )
     return None
 
 
