@@ -46,6 +46,14 @@ class ObservationSource(BaseModel):
     evidence_ref: Optional[str] = None
 
 
+class Evidence(BaseModel):
+    """The primary verbatim respondent quote grounding this observation."""
+
+    text: str = Field(min_length=1, description="Verbatim respondent statement")
+    speaker: Optional[str] = None
+    offset_ms: Optional[int] = None
+
+
 # ── Upsert ──────────────────────────────────────────────────────────────────
 
 
@@ -81,6 +89,14 @@ class ObservationUpsertRequest(TenantOwned):
     )
     evidence_chunk_id: Optional[UUID] = Field(
         default=None, description="Underlying chunk; creates the observation→evidence link"
+    )
+    evidence_chunk_ids: Optional[List[UUID]] = Field(
+        default=None, description="Source chunk links (supersedes evidence_chunk_id when set)"
+    )
+    evidence: Optional[Evidence] = Field(
+        default=None,
+        description="Primary verbatim respondent quote {text, speaker?, offset_ms?}, stored on the "
+                    "observation and returned by by-ids/by-concept for quote-level grounding.",
     )
 
 

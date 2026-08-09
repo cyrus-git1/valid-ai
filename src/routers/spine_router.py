@@ -164,6 +164,8 @@ def upsert_observation(
                 "p_study_id":          str(body.study_id) if body.study_id else None,
                 "p_evidence_chunk_id": str(body.evidence_chunk_id) if body.evidence_chunk_id else None,
                 "p_concept_id":        str(body.concept_id) if body.concept_id else None,
+                "p_evidence":          body.evidence.model_dump(exclude_none=True) if body.evidence else None,
+                "p_evidence_chunk_ids": [str(c) for c in body.evidence_chunk_ids] if body.evidence_chunk_ids else None,
             },
         ).execute()
     except Exception as ex:
@@ -218,25 +220,7 @@ def observations_by_concept(
     if isinstance(rows, dict):
         rows = [rows]
 
-    observations: List[ObservationRecord] = []
-    for row in rows:
-        observations.append(ObservationRecord(
-            node_id=str(row.get("node_id", "")),
-            observation_id=row.get("observation_id"),
-            nl_text=row.get("nl_text"),
-            value=row.get("value"),
-            modality=row.get("modality"),
-            signal_type=row.get("signal_type"),
-            direction=row.get("direction"),
-            prevalence=row.get("prevalence"),
-            confidence=row.get("confidence"),
-            reliability=row.get("reliability"),
-            segment=row.get("segment"),
-            occurred_at=row.get("occurred_at"),
-            source=row.get("source"),
-            study_id=str(row["study_id"]) if row.get("study_id") else None,
-            evidence_chunk_ids=[str(c) for c in (row.get("evidence_chunk_ids") or [])],
-        ))
+    observations: List[ObservationRecord] = [_row_to_observation(row) for row in rows]
 
     return ObservationsByConceptResponse(
         concept_id=str(concept_id),
