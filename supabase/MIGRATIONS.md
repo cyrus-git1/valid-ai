@@ -1,10 +1,12 @@
 # Migrations — Supabase CLI workflow
 
-Two directories:
+Single directory:
 
-- **`src/supabase/migrations/`** — canonical, human-numbered source (`44_seen_count_scoring.sql`, …). Author changes here for readability / git review.
-- **`supabase/migrations/`** — the same files renamed to CLI-timestamp format (`20240101004400_seen_count_scoring.sql`). **This is the only directory the Supabase CLI reads** for `db push`.
-- **`supabase/migrations_pending/`** — staging copy of just the not-yet-applied migrations (43–47). The CLI ignores this; it's a convenience for review.
+- **`supabase/migrations/`** — the one source of truth, in CLI-timestamp format (`20240101004400_seen_count_scoring.sql`). **This is the only directory the Supabase CLI reads** for `db push`. The timestamp prefix sorts in order and encodes the ordinal (`004400` → migration 44); the `_name` suffix carries the readable label.
+
+> Historical note: a second human-numbered mirror (`src/supabase/migrations/`)
+> was maintained for readability but drifted out of sync, so it was removed in
+> favour of this single directory. Author new migrations here directly.
 
 The DB was originally built by pasting SQL (out of band), so the CLI's remote
 migration-history table doesn't yet know what's applied. Do the one-time
@@ -62,7 +64,7 @@ npx supabase migration list        # every version should show applied both side
 
 ```powershell
 npx supabase migration new my_change      # creates supabase/migrations/<ts>_my_change.sql
-#   ... write SQL in that file (and mirror into src/supabase/migrations/NN_my_change.sql if you keep the numbered source) ...
+#   ... write SQL in that file ...
 npx supabase db push                       # applies only the new pending migration
 ```
 
