@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from src.logging_config import get_logger
 from src.services.audit_service import AuditService
-from src.supabase.supabase_client import get_supabase
+from src.db.supabase_client import get_supabase
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/privacy", tags=["privacy"])

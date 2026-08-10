@@ -46,7 +46,7 @@ class _FakeSB:
 
 
 def _mk_client(monkeypatch, rows, signed):
-    from src.supabase import supabase_client as sbmod
+    from src.db import supabase_client as sbmod
     from src.routers import data_router as data_mod
     from src.middleware import auth as auth_mod
     fake = _FakeSB(rows, signed)

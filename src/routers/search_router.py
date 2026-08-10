@@ -29,7 +29,7 @@ from src.models.api.search import (
 from src.services.cache_service import CacheService
 from src.services.redaction import caller_can_reveal
 from src.services.search_service import SearchService
-from src.supabase.supabase_client import get_supabase
+from src.db.supabase_client import get_supabase
 
 try:
     from openai import OpenAI

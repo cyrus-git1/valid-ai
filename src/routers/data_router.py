@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from src.services.audit_service import AuditService
 from src.services.memory_state_service import MemoryStateService
 from src.services.redaction import apply_redaction, caller_can_reveal
-from src.supabase.supabase_client import get_supabase
+from src.db.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/data", tags=["data"])

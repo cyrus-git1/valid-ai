@@ -105,7 +105,7 @@ class _FakeSupabase:
 def client(monkeypatch):
     # Stub out supabase + embeddings before the app imports anything.
     # Python's `from X import Y` binds Y at import time; patch each consumer module.
-    from src.supabase import supabase_client as sbmod
+    from src.db import supabase_client as sbmod
     from src.routers import data_router as data_mod
     from src.routers import ingest_router as ing_mod
     from src.middleware import auth as auth_mod

@@ -34,7 +34,7 @@ from src.services.tenant_plan_service import (
     TenantPlanService,
     estimate_tokens,
 )
-from src.supabase.supabase_client import get_supabase
+from src.db.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])

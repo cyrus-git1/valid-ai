@@ -63,7 +63,7 @@ class _FakeSB:
 
 
 def _client(monkeypatch, scopes):
-    from src.supabase import supabase_client as sbmod
+    from src.db import supabase_client as sbmod
     from src.routers import genomes_router as gmod
     from src.routers import admin_router as amod
     from src.middleware import auth as auth_mod

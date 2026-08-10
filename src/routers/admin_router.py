@@ -20,7 +20,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from src.supabase.supabase_client import get_supabase
+from src.db.supabase_client import get_supabase
 from src.services.memory_state_service import MemoryStateService
 from src.services.api_key_service import hash_key, key_prefix
 from src.models.api.admin import (

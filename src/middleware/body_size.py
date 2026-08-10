@@ -51,7 +51,7 @@ class BodySizeMiddleware(BaseHTTPMiddleware):
     def _plan_service(self):
         if self._plan_svc is None:
             from src.services.tenant_plan_service import TenantPlanService
-            from src.supabase.supabase_client import get_supabase
+            from src.db.supabase_client import get_supabase
             self._plan_svc = TenantPlanService(get_supabase())
         return self._plan_svc
 

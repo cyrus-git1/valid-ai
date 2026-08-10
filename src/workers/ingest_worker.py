@@ -28,7 +28,7 @@ configure_logging(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = get_logger(__name__)
 
 from src.services.ingest_service import run_processed_ingest, run_processed_web_ingest
-from src.supabase.supabase_client import get_supabase
+from src.db.supabase_client import get_supabase
 
 
 def _now_iso() -> str:

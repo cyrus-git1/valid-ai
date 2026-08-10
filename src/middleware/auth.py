@@ -25,7 +25,7 @@ from src.services.api_key_service import (
     ApiKeyRevoked,
     ApiKeyService,
 )
-from src.supabase.supabase_client import get_supabase
+from src.db.supabase_client import get_supabase
 
 logger = get_logger(__name__)
 

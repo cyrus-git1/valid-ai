@@ -33,7 +33,7 @@ class _FakeSB:
 
 @pytest.fixture
 def client(monkeypatch):
-    from src.supabase import supabase_client as sbmod
+    from src.db import supabase_client as sbmod
     from src.routers import feedback_router as fmod
     from src.middleware import auth as auth_mod
     fake = _FakeSB(); getter = lambda: fake
