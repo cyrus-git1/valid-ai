@@ -134,31 +134,3 @@ class IngestJobStatus(BaseModel):
 class IngestJobsListResponse(BaseModel):
     items: List[IngestJobStatus]
     total: int
-
-
-class ValidIngestRequest(_ProvenanceMixin):
-    """Ingest a file into the valid-docs KG (client-facing sales bot).
-
-    No tenant/client scoping — valid's corpus is a single global collection.
-    Accepts pre-chunked file content. Stores the file in the valid-docs bucket.
-    Builds valid_chunks + valid_kg_nodes + valid_kg_edges.
-
-    Allowed source_types: pdf, docx, pptx, xlsx, csv, txt, md
-    (no web scrapes, webvtt, or json)
-    """
-    file_name: str
-    file_bytes_b64: str
-    title: str
-    source_type: str
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    chunks: List[ChunkItem] = Field(default_factory=list)
-    entities: List[EntityItem] = Field(default_factory=list)
-
-
-class ValidIngestResponse(BaseModel):
-    document_id: str
-    chunks_upserted: int
-    nodes_created: int
-    edges_created: int
-    entities_linked: int = 0
-    warnings: List[str] = Field(default_factory=list)
