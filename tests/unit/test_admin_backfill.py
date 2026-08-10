@@ -56,12 +56,13 @@ def client(monkeypatch):
     from src.db import supabase_client as sbmod
     from src.routers import admin_router as admin_mod
     from src.middleware import auth as auth_mod
-    from src.routers import ingest_router as ingest_mod
+    from src.services import admin_service as admin_svc_mod
     fake = _FakeSB(); getter = lambda: fake
     for m in (sbmod, admin_mod, auth_mod):
         monkeypatch.setattr(m, "get_supabase", getter)
     # Deterministic embedder: one 1536-vector per input text, no OpenAI call.
-    monkeypatch.setattr(ingest_mod, "_embed_in_batches",
+    # Embedding orchestration moved into AdminService — patch it there.
+    monkeypatch.setattr(admin_svc_mod, "_embed_in_batches",
                         lambda texts, tenant_id=None: [[0.01] * 1536 for _ in texts])
     from src.services import api_key_service
     monkeypatch.setattr(api_key_service.ApiKeyService, "verify",
