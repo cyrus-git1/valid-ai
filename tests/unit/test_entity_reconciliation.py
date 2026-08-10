@@ -17,7 +17,8 @@ os.environ.setdefault("SUPABASE_SERVICE_KEY", "dummy")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test")
 
 from src.routers import ingest_router as ing
-from src.routers.ingest_router import EntityItem, _link_entities
+from src.routers.ingest_router import _link_entities
+from src.models.api.ingest import EntityItem
 
 TENANT = UUID("00000000-0000-0000-0000-00000000bbbb")
 CLIENT = UUID("00000000-0000-0000-0000-00000000cccc")

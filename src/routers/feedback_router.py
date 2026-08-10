@@ -8,35 +8,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
 
+from src.models.api.feedback import FeedbackAck, FeedbackRow
 from src.db.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/feedback", tags=["feedback"])
 
 _TABLE = "vera_feedback"
-
-
-class FeedbackRow(BaseModel):
-    rating: str
-    id: Optional[str] = None
-    request_id: Optional[str] = None
-    tenant_id: Optional[str] = None
-    client_id: Optional[str] = None
-    session_id: Optional[str] = None
-    comment: Optional[str] = None
-    intent: Optional[str] = None
-    message: Optional[str] = None
-    response: Optional[str] = None
-
-
-class FeedbackAck(BaseModel):
-    id: str
-    persisted: bool
 
 
 @router.post("", response_model=FeedbackAck)

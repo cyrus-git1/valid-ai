@@ -18,17 +18,30 @@ import secrets
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
 
 from src.db.supabase_client import get_supabase
 from src.services.memory_state_service import MemoryStateService
 from src.services.api_key_service import hash_key, key_prefix
 from src.models.api.admin import (
+    ApiKeyCreateRequest,
+    ApiKeyCreateResponse,
+    ApiKeyListItem,
     HealthResponse,
     MaintenanceClientResult,
     MaintenanceRunRequest,
     MaintenanceRunResponse,
+    MirrorTaxonomyRequest,
+    MirrorTaxonomyResponse,
+    MirrorTaxonomyResultItem,
+    PurgeStudyRequest,
+    PurgeStudyResponse,
+    ReembedRequest,
+    ReembedResponse,
+    RetireOrphansRequest,
+    RetireOrphansResponse,
     StatsResponse,
+    TenantPlanResponse,
+    TenantPlanSetRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,32 +68,6 @@ def _discover_client_ids(sb, tenant_id: UUID) -> list[str]:
 
 
 # ── API key management ────────────────────────────────────────────────────────
-
-
-class ApiKeyCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=128)
-    scopes: List[str] = Field(default_factory=list)
-    expires_at: Optional[str] = None
-
-
-class ApiKeyCreateResponse(BaseModel):
-    id: str
-    raw_key: str = Field(description="Shown once — store it now.")
-    key_prefix: str
-    name: str
-    scopes: List[str]
-
-
-class ApiKeyListItem(BaseModel):
-    id: str
-    key_prefix: str
-    name: str
-    scopes: List[str]
-    status: str
-    last_used_at: Optional[str] = None
-    expires_at: Optional[str] = None
-    created_at: str
-    revoked_at: Optional[str] = None
 
 
 def _require_admin(request: Request) -> str:
@@ -158,21 +145,6 @@ def revoke_api_key(key_id: str, request: Request) -> dict:
 
 
 # ── Tenant plan management (subscription tiers) ─────────────────────────────
-
-
-class TenantPlanResponse(BaseModel):
-    tenant_id: str
-    plan: str
-    notes: Optional[str] = None
-    daily_embedding_tokens_limit: int
-    daily_embedding_tokens_used: int = 0
-    max_body_bytes: int
-    max_chunks_per_ingest: int
-
-
-class TenantPlanSetRequest(BaseModel):
-    plan: str = Field(description="free | pro | enterprise")
-    notes: Optional[str] = None
 
 
 def _build_plan_response(tenant_id: str, plan: str, notes: Optional[str] = None) -> TenantPlanResponse:
@@ -367,34 +339,6 @@ def _rpc_scalar(data):
     return data
 
 
-class TaxonomyTag(BaseModel):
-    tag_id: str = Field(description="transcript_tags uuid — becomes the concept node id + external_ref")
-    label: str = Field(min_length=1)
-    description: Optional[str] = None
-
-
-class MirrorTaxonomyRequest(BaseModel):
-    tenant_id: str
-    client_id: Optional[str] = None
-    tags: List[TaxonomyTag] = Field(default_factory=list, description="Seeded codebook tags to mirror")
-
-
-class MirrorTaxonomyResultItem(BaseModel):
-    tag_id: str
-    concept_id: str = ""
-    external_ref: str = ""
-    embedded: bool = False
-    error: Optional[str] = None
-
-
-class MirrorTaxonomyResponse(BaseModel):
-    tenant_id: str
-    mirrored: int
-    embedded: int
-    failed: int
-    results: List[MirrorTaxonomyResultItem]
-
-
 @router.post("/mirror-taxonomy", response_model=MirrorTaxonomyResponse)
 def mirror_taxonomy(body: MirrorTaxonomyRequest, request: Request) -> MirrorTaxonomyResponse:
     """Batch-mirror seeded taxonomy tags into the graph as governed Concept nodes
@@ -471,22 +415,6 @@ def mirror_taxonomy(body: MirrorTaxonomyRequest, request: Request) -> MirrorTaxo
     )
 
 
-class ReembedRequest(BaseModel):
-    tenant_id: str
-    types: Optional[List[str]] = Field(
-        default=None, description="Node types to re-embed, e.g. ['Observation','Concept']. None = all embeddable."
-    )
-    limit: int = Field(default=500, ge=1, le=2000, description="Max nodes to re-embed this sweep (chunk large backfills).")
-
-
-class ReembedResponse(BaseModel):
-    tenant_id: str
-    scanned: int          # null-embedding nodes picked this sweep
-    reembedded: int       # rows actually filled
-    remaining: int        # null-embedding nodes still left after this sweep
-    embedding_model: str
-
-
 @router.post("/reembed", response_model=ReembedResponse)
 def reembed(body: ReembedRequest, request: Request) -> ReembedResponse:
     """Re-embed nodes that have a null embedding (e.g. written during an embedder
@@ -541,15 +469,6 @@ def reembed(body: ReembedRequest, request: Request) -> ReembedResponse:
 # ── Dedup / purge sweeps (formalize the manual cleanups; see migration 58) ──────
 
 
-class RetireOrphansRequest(BaseModel):
-    tenant_id: str
-
-
-class RetireOrphansResponse(BaseModel):
-    retired: int
-    retired_labels: List[str] = Field(default_factory=list)
-
-
 @router.post("/retire-orphans", response_model=RetireOrphansResponse)
 def retire_orphans(body: RetireOrphansRequest, request: Request) -> RetireOrphansResponse:
     """Delete CANDIDATE concept nodes with 0 live linked observations. Governed
@@ -570,16 +489,6 @@ def retire_orphans(body: RetireOrphansRequest, request: Request) -> RetireOrphan
     labels = [l for l in (ret.get("retired_labels") or []) if l is not None]
     logger.info("admin.retire_orphans tenant=%s retired=%s", tenant_id, ret.get("retired", 0))
     return RetireOrphansResponse(retired=int(ret.get("retired", 0)), retired_labels=labels)
-
-
-class PurgeStudyRequest(BaseModel):
-    tenant_id: str
-    study_id: str
-
-
-class PurgeStudyResponse(BaseModel):
-    observations_deleted: int
-    concepts_deleted: int
 
 
 @router.post("/purge-study", response_model=PurgeStudyResponse)

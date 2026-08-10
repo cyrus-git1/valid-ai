@@ -17,8 +17,21 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
 
+from src.models.api.data import (
+    ContextSummaryReadResponse,
+    DocumentTitlesRequest,
+    DocumentTitlesResponse,
+    KgEntitiesResponse,
+    KgEntity,
+    PreviewUrlResponse,
+    SummaryListItem,
+    SummaryListResponse,
+    SurveyOutputsResponse,
+    SurveyQuestions,
+    _BulkDeleteRequest,
+    _DocumentPatchRequest,
+)
 from src.services.audit_service import AuditService
 from src.services.memory_state_service import MemoryStateService
 from src.services.redaction import apply_redaction, caller_can_reveal
@@ -141,12 +154,6 @@ def list_documents(
 # ── Document update (flags/status) ───────────────────────────────────────────
 
 
-class _DocumentPatchRequest(BaseModel):
-    status: Optional[str] = Field(default=None, description="active | draft | deprecated | archived | flagged")
-    is_pinned: Optional[bool] = None
-    is_canonical: Optional[bool] = None
-
-
 @router.patch("/documents/{document_id}")
 def patch_document(
     document_id: str,
@@ -213,10 +220,6 @@ def patch_document(
 
 
 # ── Documents deletion ───────────────────────────────────────────────────────
-
-
-class _BulkDeleteRequest(BaseModel):
-    document_ids: List[str] = Field(min_length=1)
 
 
 @router.post("/documents/delete")
@@ -304,13 +307,6 @@ def delete_documents(
 _PREVIEW_URL_TTL = 300  # 5 minutes
 
 
-class PreviewUrlResponse(BaseModel):
-    url: str
-    expires_at: str
-    source_type: Optional[str] = None
-    filename: Optional[str] = None
-
-
 @router.get("/documents/{document_id}/preview-url", response_model=PreviewUrlResponse)
 def get_document_preview_url(
     document_id: str,
@@ -392,18 +388,6 @@ def get_document_preview_url(
 # ── Survey outputs (questions for question-alignment) ─────────────────────────
 
 
-class SurveyQuestions(BaseModel):
-    survey_id: str
-    output_type: str
-    study_id: Optional[str] = None            # from metadata.study_id (no native column)
-    questions: List[Dict[str, Any]] = Field(default_factory=list)   # agent-authored shape
-    created_at: Optional[str] = None
-
-
-class SurveyOutputsResponse(BaseModel):
-    surveys: List[SurveyQuestions] = Field(default_factory=list)
-
-
 @router.get("/survey-outputs", response_model=SurveyOutputsResponse)
 def get_survey_outputs(
     request: Request,
@@ -464,16 +448,6 @@ def get_survey_outputs(
 # ── KG entities (agent business glossary) ────────────────────────────────────
 
 
-class KgEntity(BaseModel):
-    name: Optional[str] = None
-    type: Optional[str] = None
-    description: Optional[str] = None
-
-
-class KgEntitiesResponse(BaseModel):
-    entities: List[KgEntity]
-
-
 @router.get("/kg-entities", response_model=KgEntitiesResponse)
 def get_kg_entities(
     request: Request,
@@ -504,16 +478,6 @@ def get_kg_entities(
 # ── Document titles ──────────────────────────────────────────────────────────
 
 
-class DocumentTitlesRequest(BaseModel):
-    tenant_id: UUID
-    client_id: UUID
-    document_ids: List[str]
-
-
-class DocumentTitlesResponse(BaseModel):
-    titles: Dict[str, str]
-
-
 @router.post("/document-titles", response_model=DocumentTitlesResponse)
 def get_document_titles(req: DocumentTitlesRequest) -> DocumentTitlesResponse:
     """Resolve document IDs to titles."""
@@ -540,23 +504,6 @@ def get_document_titles(req: DocumentTitlesRequest) -> DocumentTitlesResponse:
     except Exception as e:
         logger.exception("Failed to resolve document titles")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-class ContextSummaryReadResponse(BaseModel):
-    document_id: str
-    tenant_id: str
-    client_id: str
-    source_type: str
-    summary: str
-    topics: List[Any] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    source_stats: Dict[str, Any] = Field(default_factory=dict)
-    source_chunk_ids: List[str] = Field(default_factory=list)
-    memory_version_at_generation: int = 0
-    current_memory_version: int = 0
-    is_stale: bool = False
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
 
 
 def _summary_read_from_docrow(row: Dict[str, Any], chunk_content: str, current_version: int) -> ContextSummaryReadResponse:
@@ -642,24 +589,6 @@ def get_context_summary(
 
 
 # ── /data/summaries — list summaries across granularities ───────────────────
-
-
-class SummaryListItem(BaseModel):
-    document_id: str
-    source_type: str
-    tenant_id: str
-    client_id: Optional[str] = None
-    scope_ref: Optional[str] = None
-    topics: List[str] = Field(default_factory=list)
-    memory_version_at_generation: int = 0
-    is_stale: bool = False
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class SummaryListResponse(BaseModel):
-    items: List[SummaryListItem]
-    total: int
 
 
 @router.get("/summaries", response_model=SummaryListResponse)

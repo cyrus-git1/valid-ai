@@ -17,51 +17,17 @@ to your KMS of choice (AWS KMS, GCP KMS, Vault Transit) by implementing
 """
 from __future__ import annotations
 
-from typing import List, Optional
-from uuid import UUID
+from typing import List
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
 
+from src.models.api.privacy import EraseRequest, EraseResponse, RevealRequest, RevealResponse
 from src.logging_config import get_logger
 from src.services.audit_service import AuditService
 from src.db.supabase_client import get_supabase
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/privacy", tags=["privacy"])
-
-
-# ── Request / response models ───────────────────────────────────────────────
-
-
-class RevealRequest(BaseModel):
-    tenant_id: UUID
-    alias: str = Field(min_length=1)
-    reason: str = Field(min_length=4, description="Required for SOC 2 audit trail.")
-    actor_id: Optional[str] = None
-
-
-class RevealResponse(BaseModel):
-    alias: str
-    original: str
-    pii_type: str
-    first_seen_at: Optional[str] = None
-    seen_count: int = 0
-
-
-class EraseRequest(BaseModel):
-    tenant_id: UUID
-    alias: Optional[str] = None
-    actor_id: Optional[str] = Field(
-        default=None,
-        description="If set, erases all aliases originally tied to this actor (subject erasure).",
-    )
-    reason: str = Field(min_length=4)
-
-
-class EraseResponse(BaseModel):
-    aliases_erased: int
-    chunks_redacted: int
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

@@ -17,11 +17,11 @@ Keyed by (step_name, version); exactly one active version per step.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
 
+from src.models.api.genomes import GenomeModel, GenomeSummary, SetActiveRequest
 from src.routers.admin_router import _require_admin
 from src.db.supabase_client import get_supabase
 
@@ -34,36 +34,6 @@ _FULL = (
     "max_retries, agent_system_prompt, output_format_prompt, optimization_notes, "
     "test_score, test_details, is_active, created_at"
 )
-
-
-class GenomeModel(BaseModel):
-    step_name: str
-    version: int
-    parent_version: Optional[int] = None
-    manager_prompt: str = ""
-    rubric: List[Dict[str, Any]] = Field(default_factory=list)
-    score_threshold: float = 0.7
-    max_retries: int = 2
-    agent_system_prompt: str = ""
-    output_format_prompt: str = ""
-    optimization_notes: str = ""
-    test_score: Optional[float] = None
-    test_details: Dict[str, Any] = Field(default_factory=dict)
-    is_active: bool = False
-    created_at: Optional[str] = None
-
-
-class GenomeSummary(BaseModel):
-    version: int
-    is_active: bool = False
-    parent_version: Optional[int] = None
-    test_score: Optional[float] = None
-    optimization_notes: str = ""
-    created_at: Optional[str] = None
-
-
-class SetActiveRequest(BaseModel):
-    version: Optional[int] = None  # null => deactivate every version for the step
 
 
 @router.post("", response_model=GenomeModel)

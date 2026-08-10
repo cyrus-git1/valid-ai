@@ -13,35 +13,18 @@ Reads over existing tables; no schema change. Tenant-scoped by the query param
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
 
+from src.models.api.memory import MemoryChange, MemoryChangesResponse, MemoryStateResponse
 from src.logging_config import get_logger
 from src.services.memory_state_service import MemoryStateService
 from src.db.supabase_client import get_supabase
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/memory", tags=["memory"])
-
-
-class MemoryStateResponse(BaseModel):
-    memory_version: int = 0
-    last_changed_at: Optional[str] = None
-
-
-class MemoryChange(BaseModel):
-    change_type: str
-    memory_version: int
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    created_at: Optional[str] = None
-
-
-class MemoryChangesResponse(BaseModel):
-    changes: List[MemoryChange] = Field(default_factory=list)
-    current_version: int = 0
 
 
 @router.get("/state", response_model=MemoryStateResponse)
