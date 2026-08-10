@@ -23,9 +23,13 @@ from uuid import UUID
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
-from openai import OpenAI
 
 from src.config.plan_limits import get_limit
+from src.services.embedding_service import (
+    embed_in_batches as _embed_in_batches,
+    embed_texts as _embed_texts,
+    EMBED_MODEL as _EMBED_MODEL,
+)
 from src.models.api.ingest import (
     IngestJobAck,
     IngestJobStatus,
@@ -41,17 +45,13 @@ from src.models.api.ingest import (
 from src.services.audit_service import AuditService
 from src.services.memory_state_service import MemoryStateService
 from src.services.tenant_plan_service import (
-    EmbeddingQuotaService,
     TenantPlanService,
-    estimate_tokens,
 )
 from src.db.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
-_EMBED_MODEL = "text-embedding-3-small"
-_EMBED_BATCH_SIZE = 64
 _PDF_BUCKET = "pdf"
 _VALID_DOCS_BUCKET = "valid-docs"
 
@@ -93,46 +93,6 @@ _PAGE_WINDOW = 2
 _LEXICAL_TOKEN_LIMIT = 12
 _MAX_TOKEN_DOC_FREQ = 20
 _MAX_CANDIDATES_PER_CHUNK = 32
-
-
-# -- Models --
-
-
-# -- Embedding helpers --
-
-
-def _embed_texts(texts: List[str], *, tenant_id=None) -> List[List[float]]:
-    """Call OpenAI embeddings. If `tenant_id` is set, charge tokens against
-    that tenant's daily quota (and reconcile against actual usage).
-    """
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-
-    quota_svc: Optional[EmbeddingQuotaService] = None
-    estimate = 0
-    if tenant_id:
-        quota_svc = EmbeddingQuotaService(TenantPlanService(get_supabase()))
-        estimate = estimate_tokens(texts)
-        quota_svc.check_and_consume(str(tenant_id), estimate)
-
-    resp = client.embeddings.create(model=_EMBED_MODEL, input=texts)
-
-    # Reconcile actual vs estimate (OpenAI reports prompt_tokens)
-    if quota_svc and tenant_id:
-        try:
-            actual = int(getattr(getattr(resp, "usage", None), "prompt_tokens", 0) or 0)
-            if actual:
-                quota_svc.reconcile_actual(str(tenant_id), estimate, actual)
-        except Exception:
-            pass
-
-    return [d.embedding for d in resp.data]
-
-
-def _embed_in_batches(texts: List[str], *, tenant_id=None) -> List[List[float]]:
-    out: List[List[float]] = []
-    for i in range(0, len(texts), _EMBED_BATCH_SIZE):
-        out.extend(_embed_texts(texts[i:i + _EMBED_BATCH_SIZE], tenant_id=tenant_id))
-    return out
 
 
 # -- Storage helpers --

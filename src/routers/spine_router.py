@@ -60,7 +60,10 @@ from src.models.api.observations import (
     ObservationUpsertRequest,
     ObservationUpsertResponse,
 )
-from src.routers.ingest_router import _EMBED_MODEL, _embed_in_batches
+from src.services.embedding_service import (
+    embed_in_batches as _embed_in_batches,
+    EMBED_MODEL as _EMBED_MODEL,
+)
 from src.db.supabase_client import get_supabase
 
 logger = get_logger(__name__)

@@ -35,7 +35,10 @@ from src.models.api.entities import (
     EntityUpsertResponse,
     MentionItem,
 )
-from src.routers.ingest_router import _embed_in_batches, _EMBED_MODEL
+from src.services.embedding_service import (
+    embed_in_batches as _embed_in_batches,
+    EMBED_MODEL as _EMBED_MODEL,
+)
 
 logger = get_logger(__name__)
 
