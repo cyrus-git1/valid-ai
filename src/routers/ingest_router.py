@@ -13,7 +13,6 @@ KG node/edge creation, entity linking.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import os
 import re
@@ -254,18 +253,6 @@ def _set_audit_context(sb, *, actor_id: Optional[str], request_id: Optional[str]
         }).execute()
     except Exception as e:
         logger.debug("set_audit_context failed: %s", e)
-
-
-def _provenance_dict(prov: Optional[Any]) -> Dict[str, Any]:
-    """Extract the standard provenance fields from a request body model."""
-    if not prov:
-        return {}
-    out: Dict[str, Any] = {}
-    for k in ("actor_id", "actor_type", "source_app", "request_id", "previous_version_id"):
-        v = getattr(prov, k, None)
-        if v is not None:
-            out[k] = v
-    return out
 
 
 def _upsert_document(

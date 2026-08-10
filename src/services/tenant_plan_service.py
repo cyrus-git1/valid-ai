@@ -7,7 +7,6 @@ letting them through.
 """
 from __future__ import annotations
 
-import json
 import os
 from typing import Optional
 
@@ -172,7 +171,6 @@ class EmbeddingQuotaService:
             except Exception:
                 pass
             from fastapi import HTTPException
-            from src.config.plan_limits import get_limit
             plan = self.plan_service.get_plan(tenant_id)
             raise HTTPException(
                 status_code=429,

@@ -107,6 +107,3 @@ class CacheService:
         else:
             prefix = f"search:{tenant_id}:"
         return self.delete_by_prefix(prefix)
-
-    def invalidate_context_summary(self, tenant_id: str, client_id: str) -> None:
-        self.delete(f"ctxsum:{tenant_id}:{client_id}")

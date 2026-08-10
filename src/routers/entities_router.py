@@ -666,7 +666,7 @@ def get_entity_rollup(
                 sample_contexts=list(ep.get("sample_contexts") or [])[:3],
                 extracted_at=ep.get("extracted_at"),
             ))
-    except Exception as ex:
+    except Exception:
         logger.exception("entity rollup mentions fetch failed")
         mentions = []
 

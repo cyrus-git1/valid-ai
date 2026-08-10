@@ -306,7 +306,7 @@ def stats(
         chunk_count = 0
 
     try:
-        emb_res = sb.rpc(
+        sb.rpc(
             "fetch_chunks_with_embeddings",
             {
                 "p_tenant_id": str(tenant_id),
