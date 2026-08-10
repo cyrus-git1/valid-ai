@@ -69,6 +69,7 @@ class _FakeSupabase:
 def client(monkeypatch):
     from src.db import supabase_client as sbmod
     from src.routers import spine_router as spine_mod
+    from src.services import spine_service as spine_svc_mod
     from src.middleware import auth as auth_mod
 
     fake_sb = _FakeSupabase()
@@ -78,7 +79,7 @@ def client(monkeypatch):
     monkeypatch.setattr(auth_mod, "get_supabase", getter)
 
     # Deterministic embeddings (bound into spine_router's namespace at import).
-    monkeypatch.setattr(spine_mod, "_embed_in_batches", lambda texts, **kw: [[0.1] * 1536 for _ in texts])
+    monkeypatch.setattr(spine_svc_mod, "_embed_in_batches", lambda texts, **kw: [[0.1] * 1536 for _ in texts])
 
     from src.services import api_key_service
 

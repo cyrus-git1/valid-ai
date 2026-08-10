@@ -40,12 +40,13 @@ class _FakeSB:
 def client(monkeypatch):
     from src.db import supabase_client as sbmod
     from src.routers import spine_router as spine_mod
+    from src.services import spine_service as spine_svc_mod
     from src.middleware import auth as auth_mod
     fake = _FakeSB(); getter = lambda: fake
     monkeypatch.setattr(sbmod, "get_supabase", getter)
     monkeypatch.setattr(spine_mod, "get_supabase", getter)
     monkeypatch.setattr(auth_mod, "get_supabase", getter)
-    monkeypatch.setattr(spine_mod, "_embed_in_batches", lambda texts, **kw: [[0.1] * 1536 for _ in texts])
+    monkeypatch.setattr(spine_svc_mod, "_embed_in_batches", lambda texts, **kw: [[0.1] * 1536 for _ in texts])
     from src.services import api_key_service
     monkeypatch.setattr(api_key_service.ApiKeyService, "verify",
                         lambda self, k: {"key_id": "k", "tenant_id": TENANT, "scopes": ["read", "write"], "status": "active", "expired": False})
