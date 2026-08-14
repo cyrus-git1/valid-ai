@@ -54,6 +54,12 @@ from src.models.api.app_entities import (
     AppEntityUpsertRequest,
     AppEntityUpsertResponse,
 )
+from src.models.api.canvas_blocks import (
+    CanvasBlockUpsertRequest,
+    CanvasBlockUpsertResponse,
+    CanvasByScopeRequest,
+    CanvasByScopeResponse,
+)
 from src.models.api.observations import (
     ObservationsByConceptResponse,
     ObservationsByIdsRequest,
@@ -70,6 +76,7 @@ logger = get_logger(__name__)
 observations_router = APIRouter(prefix="/observations", tags=["observations"])
 concepts_router = APIRouter(prefix="/concepts", tags=["concepts"])
 app_entities_router = APIRouter(prefix="/app-entities", tags=["app-entities"])
+canvas_router = APIRouter(prefix="/canvas", tags=["canvas"])
 
 
 # ── Tenant helpers (same pattern as entities_router) ────────────────────────
@@ -236,3 +243,23 @@ def nearest_app_entities(body: AppEntityNearestRequest, request: Request) -> App
     """Semantic recall of app objects by id, scoped to study_ids (+ optional kinds)."""
     tenant_id = _check_tenant_match(request, body.tenant_id)
     return SpineService(get_supabase()).nearest_app_entities(tenant_id, body)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Canvas — persist the grounding-canvas blocks as CanvasBlock kg_nodes
+# ════════════════════════════════════════════════════════════════════════════
+
+
+@canvas_router.post("/upsert", response_model=CanvasBlockUpsertResponse)
+def upsert_canvas_block(body: CanvasBlockUpsertRequest, request: Request) -> CanvasBlockUpsertResponse:
+    """Upsert one canvas block (org or study scope), keyed by scope+block_key.
+    A pinned human statement is never overwritten by an agent upsert."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).upsert_canvas_block(tenant_id, body)
+
+
+@canvas_router.post("/by-scope", response_model=CanvasByScopeResponse)
+def canvas_by_scope(body: CanvasByScopeRequest, request: Request) -> CanvasByScopeResponse:
+    """Fetch all canvas blocks for a scope (study overlay, or org-level when study_id omitted)."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).canvas_by_scope(tenant_id, body)

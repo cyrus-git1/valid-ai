@@ -46,6 +46,7 @@ from src.routers.privacy_router import router as privacy_router
 from src.routers.search_router import router as search_router
 from src.routers.spine_router import (
     app_entities_router,
+    canvas_router,
     concepts_router,
     observations_router,
 )
@@ -103,6 +104,7 @@ app.include_router(entities_kg_router)
 app.include_router(observations_router)
 app.include_router(concepts_router)
 app.include_router(app_entities_router)
+app.include_router(canvas_router)
 app.include_router(memory_router)
 app.include_router(genomes_router)
 app.include_router(feedback_router)

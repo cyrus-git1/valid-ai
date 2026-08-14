@@ -594,3 +594,114 @@ class SpineService:
             for row in rows
         ]
         return AppEntityNearestResponse(matches=matches)
+
+    # ── canvas blocks ────────────────────────────────────────────────────────
+
+    def upsert_canvas_block(self, tenant_id: str, body: "CanvasBlockUpsertRequest") -> "CanvasBlockUpsertResponse":
+        from src.models.api.canvas_blocks import CanvasBlockUpsertResponse
+
+        client_id = str(body.client_id) if body.client_id else None
+        study_id = str(body.study_id) if body.study_id else None
+        sb = self.sb
+
+        node_key = (
+            f"canvas:org:{body.block_key}" if study_id is None
+            else f"canvas:study:{study_id}:{body.block_key}"
+        )
+
+        # Re-embed only when the statement (embedded text = name) changed.
+        embedding = None
+        if body.statement:
+            unchanged = False
+            try:
+                q = (
+                    sb.table("kg_nodes")
+                    .select("name")
+                    .eq("tenant_id", tenant_id)
+                    .eq("node_key", node_key)
+                    .eq("type", "CanvasBlock")
+                )
+                q = q.eq("client_id", client_id) if client_id else q.is_("client_id", "null")
+                rows = (q.limit(1).execute().data) or []
+                unchanged = bool(rows) and rows[0].get("name") == body.statement
+            except Exception as ex:
+                logger.debug("canvas-block text-change check failed (will re-embed): %s", ex)
+            if not unchanged:
+                try:
+                    embedding = _embed_in_batches([body.statement], tenant_id=tenant_id)[0]
+                except Exception as ex:
+                    logger.warning("canvas-block embedding failed (storing null embedding): %s", ex)
+                    embedding = None
+
+        try:
+            res = sb.rpc(
+                "upsert_canvas_block",
+                {
+                    "p_tenant_id":       tenant_id,
+                    "p_client_id":       client_id,
+                    "p_study_id":        study_id,
+                    "p_block_key":       body.block_key,
+                    "p_statement":       body.statement,
+                    "p_stated":          body.stated,
+                    "p_evidenced":       body.evidenced,
+                    "p_source":          body.source,
+                    "p_status":          body.status,
+                    "p_confidence":      body.confidence,
+                    "p_pinned":          body.pinned,
+                    "p_divergence":      body.divergence,
+                    "p_evidence_refs":   body.evidence_refs,
+                    "p_embedding":       embedding,
+                    "p_embedding_model": _EMBED_MODEL,
+                },
+            ).execute()
+        except Exception as ex:
+            logger.exception("upsert_canvas_block failed for %s (%s)", body.block_key, node_key)
+            raise HTTPException(status_code=500, detail=str(ex))
+
+        ret = self._rpc_scalar(res.data)
+        return CanvasBlockUpsertResponse(
+            node_id=str(ret.get("node_id", "")),
+            block_key=ret.get("block_key", body.block_key),
+            scope=ret.get("scope", "org" if study_id is None else "study"),
+            created=bool(ret.get("created", False)),
+            pinned=bool(ret.get("pinned", False)),
+            divergence=bool(ret.get("divergence", False)),
+        )
+
+    def canvas_by_scope(self, tenant_id: str, body: "CanvasByScopeRequest") -> "CanvasByScopeResponse":
+        from src.models.api.canvas_blocks import CanvasBlockRow, CanvasByScopeResponse
+
+        client_id = str(body.client_id) if body.client_id else None
+        study_id = str(body.study_id) if body.study_id else None
+
+        try:
+            res = self.sb.rpc(
+                "canvas_by_scope",
+                {"p_tenant_id": tenant_id, "p_client_id": client_id, "p_study_id": study_id},
+            ).execute()
+        except Exception as ex:
+            logger.exception("canvas_by_scope failed")
+            raise HTTPException(status_code=500, detail=str(ex))
+
+        rows = res.data or []
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        blocks = [
+            CanvasBlockRow(
+                node_id=str(row.get("node_id", "")),
+                block_key=str(row.get("block_key", "")),
+                statement=row.get("statement"),
+                stated=row.get("stated"),
+                evidenced=row.get("evidenced"),
+                source=row.get("source"),
+                status=row.get("status"),
+                confidence=row.get("confidence"),
+                pinned=bool(row.get("pinned", False)),
+                divergence=bool(row.get("divergence", False)),
+                study_id=str(row["study_id"]) if row.get("study_id") else None,
+                evidence_refs=row.get("evidence_refs") or [],
+            )
+            for row in rows
+        ]
+        return CanvasByScopeResponse(blocks=blocks)
