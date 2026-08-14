@@ -60,6 +60,12 @@ from src.models.api.canvas_blocks import (
     CanvasByScopeRequest,
     CanvasByScopeResponse,
 )
+from src.models.api.hypotheses import (
+    HypothesesByScopeRequest,
+    HypothesesByScopeResponse,
+    HypothesisUpsertRequest,
+    HypothesisUpsertResponse,
+)
 from src.models.api.observations import (
     ObservationsByConceptResponse,
     ObservationsByIdsRequest,
@@ -77,6 +83,7 @@ observations_router = APIRouter(prefix="/observations", tags=["observations"])
 concepts_router = APIRouter(prefix="/concepts", tags=["concepts"])
 app_entities_router = APIRouter(prefix="/app-entities", tags=["app-entities"])
 canvas_router = APIRouter(prefix="/canvas", tags=["canvas"])
+hypotheses_router = APIRouter(prefix="/hypotheses", tags=["hypotheses"])
 
 
 # ── Tenant helpers (same pattern as entities_router) ────────────────────────
@@ -263,3 +270,24 @@ def canvas_by_scope(body: CanvasByScopeRequest, request: Request) -> CanvasBySco
     """Fetch all canvas blocks for a scope (study overlay, or org-level when study_id omitted)."""
     tenant_id = _check_tenant_match(request, body.tenant_id)
     return SpineService(get_supabase()).canvas_by_scope(tenant_id, body)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Hypotheses — store testable claims as Hypothesis kg_nodes (linker sets links)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+@hypotheses_router.post("/upsert", response_model=HypothesisUpsertResponse)
+def upsert_hypothesis(body: HypothesisUpsertRequest, request: Request) -> HypothesisUpsertResponse:
+    """Upsert one hypothesis (org or study scope), keyed by external_id. Editing
+    the text re-embeds it; the linker (agent-side) then re-derives theme_ids +
+    evidence_refs."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).upsert_hypothesis(tenant_id, body)
+
+
+@hypotheses_router.post("/by-scope", response_model=HypothesesByScopeResponse)
+def hypotheses_by_scope(body: HypothesesByScopeRequest, request: Request) -> HypothesesByScopeResponse:
+    """Fetch all hypotheses for a scope (study, or org-level when study_id omitted)."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).hypotheses_by_scope(tenant_id, body)

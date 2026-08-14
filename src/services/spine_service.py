@@ -705,3 +705,108 @@ class SpineService:
             for row in rows
         ]
         return CanvasByScopeResponse(blocks=blocks)
+
+    # ── hypotheses ───────────────────────────────────────────────────────────
+
+    def upsert_hypothesis(self, tenant_id: str, body: "HypothesisUpsertRequest") -> "HypothesisUpsertResponse":
+        from src.models.api.hypotheses import HypothesisUpsertResponse
+
+        client_id = str(body.client_id) if body.client_id else None
+        study_id = str(body.study_id) if body.study_id else None
+        sb = self.sb
+
+        node_key = (
+            f"hyp:org:{body.external_id}" if study_id is None
+            else f"hyp:study:{study_id}:{body.external_id}"
+        )
+
+        # Re-embed only when the claim text (embedded = name) changed.
+        embedding = None
+        if body.text:
+            unchanged = False
+            try:
+                q = (
+                    sb.table("kg_nodes")
+                    .select("name")
+                    .eq("tenant_id", tenant_id)
+                    .eq("node_key", node_key)
+                    .eq("type", "Hypothesis")
+                )
+                q = q.eq("client_id", client_id) if client_id else q.is_("client_id", "null")
+                rows = (q.limit(1).execute().data) or []
+                unchanged = bool(rows) and rows[0].get("name") == body.text
+            except Exception as ex:
+                logger.debug("hypothesis text-change check failed (will re-embed): %s", ex)
+            if not unchanged:
+                try:
+                    embedding = _embed_in_batches([body.text], tenant_id=tenant_id)[0]
+                except Exception as ex:
+                    logger.warning("hypothesis embedding failed (storing null embedding): %s", ex)
+                    embedding = None
+
+        try:
+            res = sb.rpc(
+                "upsert_hypothesis",
+                {
+                    "p_tenant_id":       tenant_id,
+                    "p_client_id":       client_id,
+                    "p_study_id":        study_id,
+                    "p_external_id":     body.external_id,
+                    "p_text":            body.text,
+                    "p_block_key":       body.block_key,
+                    "p_status":          body.status,
+                    "p_confidence":      body.confidence,
+                    "p_reasoning":       body.reasoning,
+                    "p_theme_ids":       body.theme_ids,
+                    "p_evidence_refs":   body.evidence_refs,
+                    "p_embedding":       embedding,
+                    "p_embedding_model": _EMBED_MODEL,
+                },
+            ).execute()
+        except Exception as ex:
+            logger.exception("upsert_hypothesis failed for %s", body.external_id)
+            raise HTTPException(status_code=500, detail=str(ex))
+
+        ret = self._rpc_scalar(res.data)
+        return HypothesisUpsertResponse(
+            node_id=str(ret.get("node_id", "")),
+            external_id=ret.get("external_id", body.external_id),
+            scope=ret.get("scope", "org" if study_id is None else "study"),
+            created=bool(ret.get("created", False)),
+        )
+
+    def hypotheses_by_scope(self, tenant_id: str, body: "HypothesesByScopeRequest") -> "HypothesesByScopeResponse":
+        from src.models.api.hypotheses import HypothesesByScopeResponse, HypothesisRow
+
+        client_id = str(body.client_id) if body.client_id else None
+        study_id = str(body.study_id) if body.study_id else None
+
+        try:
+            res = self.sb.rpc(
+                "hypotheses_by_scope",
+                {"p_tenant_id": tenant_id, "p_client_id": client_id, "p_study_id": study_id},
+            ).execute()
+        except Exception as ex:
+            logger.exception("hypotheses_by_scope failed")
+            raise HTTPException(status_code=500, detail=str(ex))
+
+        rows = res.data or []
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        hyps = [
+            HypothesisRow(
+                node_id=str(row.get("node_id", "")),
+                external_id=str(row.get("external_id", "")),
+                text=row.get("text"),
+                block_key=row.get("block_key"),
+                status=row.get("status"),
+                confidence=row.get("confidence"),
+                reasoning=row.get("reasoning"),
+                theme_ids=row.get("theme_ids") or [],
+                evidence_refs=row.get("evidence_refs") or [],
+                study_id=str(row["study_id"]) if row.get("study_id") else None,
+            )
+            for row in rows
+        ]
+        return HypothesesByScopeResponse(hypotheses=hyps)

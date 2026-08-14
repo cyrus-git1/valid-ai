@@ -48,6 +48,7 @@ from src.routers.spine_router import (
     app_entities_router,
     canvas_router,
     concepts_router,
+    hypotheses_router,
     observations_router,
 )
 
@@ -105,6 +106,7 @@ app.include_router(observations_router)
 app.include_router(concepts_router)
 app.include_router(app_entities_router)
 app.include_router(canvas_router)
+app.include_router(hypotheses_router)
 app.include_router(memory_router)
 app.include_router(genomes_router)
 app.include_router(feedback_router)
