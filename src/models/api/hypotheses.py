@@ -26,6 +26,7 @@ class HypothesisUpsertRequest(TenantOwned):
     status: Optional[str] = Field(default=None, description="untested | supported | refuted | mixed")
     confidence: Optional[str] = Field(default=None, description="high | medium | low")
     reasoning: Optional[str] = Field(default=None, description="Why we expect this.")
+    origin: Optional[str] = Field(default=None, description="Where it came from: docs | spine | user | inferred (set once).")
     theme_ids: Optional[List[str]] = Field(default=None, description="Linked concept (theme) ids.")
     evidence_refs: Optional[List[Dict[str, Any]]] = Field(
         default=None, description="Stance-tagged SourceRefs [{type,id,origin,stance,weight,study_id}]."
@@ -54,9 +55,13 @@ class HypothesisRow(BaseModel):
     status: Optional[str] = None
     confidence: Optional[str] = None
     reasoning: Optional[str] = None
+    origin: Optional[str] = None
     theme_ids: List[str] = Field(default_factory=list)
     evidence_refs: List[Dict[str, Any]] = Field(default_factory=list)
     study_id: Optional[str] = None
+    seen_count: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class HypothesesByScopeResponse(BaseModel):

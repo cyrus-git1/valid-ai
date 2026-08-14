@@ -761,6 +761,7 @@ class SpineService:
                     "p_evidence_refs":   body.evidence_refs,
                     "p_embedding":       embedding,
                     "p_embedding_model": _EMBED_MODEL,
+                    "p_origin":          body.origin,
                 },
             ).execute()
         except Exception as ex:
@@ -803,9 +804,13 @@ class SpineService:
                 status=row.get("status"),
                 confidence=row.get("confidence"),
                 reasoning=row.get("reasoning"),
+                origin=row.get("origin"),
                 theme_ids=row.get("theme_ids") or [],
                 evidence_refs=row.get("evidence_refs") or [],
                 study_id=str(row["study_id"]) if row.get("study_id") else None,
+                seen_count=row.get("seen_count"),
+                created_at=str(row["created_at"]) if row.get("created_at") else None,
+                updated_at=str(row["updated_at"]) if row.get("updated_at") else None,
             )
             for row in rows
         ]
