@@ -70,6 +70,12 @@ from src.models.api.canvas_events import (
     CanvasEventsRequest,
     CanvasEventsResponse,
 )
+from src.models.api.canvas_impact import (
+    ImpactLinkUpsertRequest,
+    ImpactLinkUpsertResponse,
+    ImpactLinksRequest,
+    ImpactLinksResponse,
+)
 from src.models.api.observations import (
     ObservationsByConceptResponse,
     ObservationsByIdsRequest,
@@ -281,6 +287,20 @@ def canvas_events(body: CanvasEventsRequest, request: Request) -> CanvasEventsRe
     """The canvas change log — status/confidence transitions for a scope."""
     tenant_id = _check_tenant_match(request, body.tenant_id)
     return SpineService(get_supabase()).canvas_events_by_scope(tenant_id, body)
+
+
+@canvas_router.post("/impact/upsert", response_model=ImpactLinkUpsertResponse)
+def upsert_impact_link(body: ImpactLinkUpsertRequest, request: Request) -> ImpactLinkUpsertResponse:
+    """Link a shipped change to the hypothesis/block it targeted (Impact ledger)."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).upsert_impact_link(tenant_id, body)
+
+
+@canvas_router.post("/impact/list", response_model=ImpactLinksResponse)
+def impact_links(body: ImpactLinksRequest, request: Request) -> ImpactLinksResponse:
+    """List impact links for a scope."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).impact_links_by_scope(tenant_id, body)
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -816,6 +816,57 @@ class SpineService:
         ]
         return HypothesesByScopeResponse(hypotheses=hyps)
 
+    # ── impact links (change -> hypothesis/block) ────────────────────────────
+
+    def upsert_impact_link(self, tenant_id: str, body: "ImpactLinkUpsertRequest") -> "ImpactLinkUpsertResponse":
+        from src.models.api.canvas_impact import ImpactLinkUpsertResponse
+
+        try:
+            res = self.sb.rpc("upsert_impact_link", {
+                "p_tenant_id": tenant_id,
+                "p_client_id": str(body.client_id) if body.client_id else None,
+                "p_change_text": body.change_text,
+                "p_study_id": str(body.study_id) if body.study_id else None,
+                "p_shipped_at": body.shipped_at,
+                "p_hypothesis_external_id": body.hypothesis_external_id,
+                "p_block_key": body.block_key,
+                "p_id": str(body.id) if body.id else None,
+            }).execute()
+        except Exception as ex:
+            logger.exception("upsert_impact_link failed")
+            raise HTTPException(status_code=500, detail=str(ex))
+        data = res.data
+        if isinstance(data, list):
+            data = data[0] if data else None
+        return ImpactLinkUpsertResponse(id=str(data) if data else "")
+
+    def impact_links_by_scope(self, tenant_id: str, body: "ImpactLinksRequest") -> "ImpactLinksResponse":
+        from src.models.api.canvas_impact import ImpactLink, ImpactLinksResponse
+
+        try:
+            res = self.sb.rpc("impact_links_by_scope", {
+                "p_tenant_id": tenant_id,
+                "p_client_id": str(body.client_id) if body.client_id else None,
+                "p_study_id": str(body.study_id) if body.study_id else None,
+            }).execute()
+        except Exception as ex:
+            logger.exception("impact_links_by_scope failed")
+            raise HTTPException(status_code=500, detail=str(ex))
+        rows = res.data or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        return ImpactLinksResponse(links=[
+            ImpactLink(
+                id=str(r.get("id", "")), change_text=str(r.get("change_text", "")),
+                shipped_at=str(r["shipped_at"]) if r.get("shipped_at") else None,
+                hypothesis_external_id=r.get("hypothesis_external_id"),
+                block_key=r.get("block_key"),
+                study_id=str(r["study_id"]) if r.get("study_id") else None,
+                created_at=str(r["created_at"]) if r.get("created_at") else None,
+            )
+            for r in rows
+        ])
+
     # ── canvas events (change log) ───────────────────────────────────────────
 
     def canvas_events_by_scope(self, tenant_id: str, body: "CanvasEventsRequest") -> "CanvasEventsResponse":
