@@ -66,6 +66,10 @@ from src.models.api.hypotheses import (
     HypothesisUpsertRequest,
     HypothesisUpsertResponse,
 )
+from src.models.api.canvas_events import (
+    CanvasEventsRequest,
+    CanvasEventsResponse,
+)
 from src.models.api.observations import (
     ObservationsByConceptResponse,
     ObservationsByIdsRequest,
@@ -270,6 +274,13 @@ def canvas_by_scope(body: CanvasByScopeRequest, request: Request) -> CanvasBySco
     """Fetch all canvas blocks for a scope (study overlay, or org-level when study_id omitted)."""
     tenant_id = _check_tenant_match(request, body.tenant_id)
     return SpineService(get_supabase()).canvas_by_scope(tenant_id, body)
+
+
+@canvas_router.post("/events", response_model=CanvasEventsResponse)
+def canvas_events(body: CanvasEventsRequest, request: Request) -> CanvasEventsResponse:
+    """The canvas change log — status/confidence transitions for a scope."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).canvas_events_by_scope(tenant_id, body)
 
 
 # ════════════════════════════════════════════════════════════════════════════

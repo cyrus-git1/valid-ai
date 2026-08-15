@@ -815,3 +815,36 @@ class SpineService:
             for row in rows
         ]
         return HypothesesByScopeResponse(hypotheses=hyps)
+
+    # ── canvas events (change log) ───────────────────────────────────────────
+
+    def canvas_events_by_scope(self, tenant_id: str, body: "CanvasEventsRequest") -> "CanvasEventsResponse":
+        from src.models.api.canvas_events import CanvasEvent, CanvasEventsResponse
+
+        client_id = str(body.client_id) if body.client_id else None
+        study_id = str(body.study_id) if body.study_id else None
+        try:
+            res = self.sb.rpc(
+                "canvas_events_by_scope",
+                {"p_tenant_id": tenant_id, "p_client_id": client_id,
+                 "p_study_id": study_id, "p_limit": body.limit},
+            ).execute()
+        except Exception as ex:
+            logger.exception("canvas_events_by_scope failed")
+            raise HTTPException(status_code=500, detail=str(ex))
+
+        rows = res.data or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        return CanvasEventsResponse(events=[
+            CanvasEvent(
+                entity_type=str(r.get("entity_type", "")),
+                entity_key=r.get("entity_key"),
+                field=str(r.get("field", "")),
+                from_value=r.get("from_value"),
+                to_value=r.get("to_value"),
+                study_id=str(r["study_id"]) if r.get("study_id") else None,
+                at=str(r["at"]) if r.get("at") else None,
+            )
+            for r in rows
+        ])
