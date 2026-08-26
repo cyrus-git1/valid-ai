@@ -31,7 +31,14 @@ from src.models.api.data import (
     _BulkDeleteRequest,
     _DocumentPatchRequest,
 )
+from src.models.api.corrections import (
+    CorrectionCreateRequest,
+    CorrectionCreateResponse,
+    CorrectionDeleteResponse,
+    CorrectionsListResponse,
+)
 from src.services.data_service import DataService, _PREVIEW_URL_TTL
+from src.services.corrections_service import CorrectionsService
 from src.services.redaction import caller_can_reveal
 from src.db.supabase_client import get_supabase
 
@@ -168,6 +175,42 @@ def get_context_summary(
     return DataService(get_supabase()).get_context_summary(
         tenant_id, client_id, caller_can_reveal(request),
     )
+
+
+# ── Context corrections (tenant-scoped overrides, applied at read time) ─────────
+
+
+@router.post("/context/corrections", response_model=CorrectionCreateResponse)
+def create_correction(
+    body: CorrectionCreateRequest,
+    request: Request,
+    tenant_id: UUID = Query(...),
+    client_id: UUID = Query(...),
+) -> CorrectionCreateResponse:
+    """Record a non-destructive 'going forward' correction (term_replace / disregard).
+    Applied at read time in the context summary + retrieval; source docs untouched."""
+    return CorrectionsService(get_supabase()).create(tenant_id, client_id, body, request)
+
+
+@router.get("/context/corrections", response_model=CorrectionsListResponse)
+def list_corrections(
+    request: Request,
+    tenant_id: UUID = Query(...),
+    client_id: UUID = Query(...),
+) -> CorrectionsListResponse:
+    """List active corrections for a (tenant, client)."""
+    return CorrectionsService(get_supabase()).list_corrections(tenant_id, client_id)
+
+
+@router.delete("/context/corrections/{correction_id}", response_model=CorrectionDeleteResponse)
+def delete_correction(
+    correction_id: str,
+    request: Request,
+    tenant_id: UUID = Query(...),
+    client_id: UUID = Query(...),
+) -> CorrectionDeleteResponse:
+    """Remove one correction (tenant-scoped)."""
+    return CorrectionsService(get_supabase()).delete(correction_id, tenant_id, client_id, request)
 
 
 @router.get("/summaries", response_model=SummaryListResponse)

@@ -12,9 +12,35 @@ list back. No DB calls.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+
+def apply_corrections(text: Optional[str], corrections: List[Dict[str, Any]]) -> Optional[str]:
+    """Fold active context corrections into a piece of read-time text.
+
+    term_replace → swap every occurrence of `from_term` with `to_term`.
+    disregard    → drop `from_term`.
+    Case-insensitive, loose word-boundary match so multi-word phrases
+    ("Valid Technologies") swap cleanly. Pure / side-effect free.
+    """
+    if not text or not corrections:
+        return text
+    out = text
+    for c in corrections:
+        frm = c.get("from_term") or c.get("from")
+        if not frm:
+            continue
+        pattern = re.compile(r"(?<!\w)" + re.escape(frm) + r"(?!\w)", re.IGNORECASE)
+        if c.get("kind") == "term_replace":
+            out = pattern.sub(c.get("to_term") or c.get("to") or "", out)
+        elif c.get("kind") == "disregard":
+            out = pattern.sub("", out)
+    # tidy whitespace left by drops
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return out
 
 
 def _norm(vec: Any) -> Optional[np.ndarray]:

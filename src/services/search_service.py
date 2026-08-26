@@ -145,4 +145,16 @@ class SearchService:
             use_rerank=use_rerank,
             dedup_threshold=dedup_threshold,
         )
-        return retriever.invoke(query)
+        docs = retriever.invoke(query)
+
+        # Fold tenant context corrections into retrieved content (non-destructive).
+        try:
+            from src.db.supabase_client import get_supabase
+            from src.services.corrections_service import CorrectionsService
+            docs = CorrectionsService(get_supabase()).apply_to_documents(
+                docs, self.tenant_id, self.client_id
+            )
+        except Exception:
+            logger.warning("context-correction post-process failed; returning raw docs", exc_info=True)
+
+        return docs

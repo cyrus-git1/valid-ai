@@ -459,6 +459,10 @@ class DataService:
             else:
                 content = ""
 
+            # Fold tenant corrections in at read time (non-destructive; source untouched).
+            from src.services.corrections_service import CorrectionsService
+            content = CorrectionsService(sb).apply_to_summary(content, tenant_id, client_id)
+
             state = MemoryStateService(sb).get_state(tenant_id=tenant_id, client_id=client_id)
             current_version = int(state.get("memory_version") or 0)
             return self._summary_read_from_docrow(row, content, current_version)

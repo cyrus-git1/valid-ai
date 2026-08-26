@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -42,10 +43,13 @@ def register(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def handle_validation(request: Request, exc: RequestValidationError):
         request_id = getattr(request.state, "request_id", "-")
-        logger.info("validation_error", errors=exc.errors())
+        # jsonable_encoder: model_validator errors carry the raw exception in ctx,
+        # which is not JSON-serializable otherwise.
+        errors = jsonable_encoder(exc.errors())
+        logger.info("validation_error", errors=errors)
         return JSONResponse(
             status_code=422,
-            content=_envelope("validation.failed", "Request validation failed", request_id, errors=exc.errors()),
+            content=_envelope("validation.failed", "Request validation failed", request_id, errors=errors),
             headers={"X-Request-ID": request_id},
         )
 
