@@ -33,6 +33,8 @@ from src.models.api.admin import (
     MirrorTaxonomyResultItem,
     PurgeStudyRequest,
     PurgeStudyResponse,
+    ReconcileRequest,
+    ReconcileResponse,
     ReembedRequest,
     ReembedResponse,
     RetireOrphansRequest,
@@ -345,6 +347,29 @@ class AdminService:
         logger.info("admin.reembed tenant=%s scanned=%d reembedded=%d remaining=%d", tenant_id, scanned, reembedded, remaining)
         return ReembedResponse(
             tenant_id=tenant_id, scanned=scanned, reembedded=reembedded, remaining=remaining, embedding_model=_EMBED_MODEL,
+        )
+
+    def reconcile(self, body: ReconcileRequest) -> ReconcileResponse:
+        """Read-only embedding-drift report for a tenant (Phase 1: detect only)."""
+        try:
+            tenant_id = str(UUID(body.tenant_id))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid tenant_id: {e}")
+        rep = _rpc_scalar(self.sb.rpc(
+            "reconcile_report",
+            {"p_tenant_id": tenant_id, "p_types": body.types or None, "p_target_model": _EMBED_MODEL},
+        ).execute().data) or {}
+        logger.info("admin.reconcile tenant=%s null=%s model_mismatch=%s content_drift=%s",
+                    tenant_id, rep.get("null_embedding"), rep.get("model_mismatch"), rep.get("content_drift"))
+        return ReconcileResponse(
+            tenant_id=tenant_id,
+            embedding_model=_EMBED_MODEL,
+            null_embedding=int(rep.get("null_embedding", 0)),
+            model_mismatch=int(rep.get("model_mismatch", 0)),
+            content_drift=int(rep.get("content_drift", 0)),
+            unknown_hash=int(rep.get("unknown_hash", 0)),
+            total_vectorized=int(rep.get("total_vectorized", 0)),
+            total_active=int(rep.get("total_active", 0)),
         )
 
     # ── Dedup / purge sweeps ─────────────────────────────────────────────────

@@ -30,6 +30,8 @@ from src.models.api.admin import (
     MirrorTaxonomyResponse,
     PurgeStudyRequest,
     PurgeStudyResponse,
+    ReconcileRequest,
+    ReconcileResponse,
     ReembedRequest,
     ReembedResponse,
     RetireOrphansRequest,
@@ -156,6 +158,13 @@ def reembed(body: ReembedRequest, request: Request) -> ReembedResponse:
     """Re-embed nodes that have a null embedding. Idempotent and chunkable via
     `limit`; re-run until `remaining` is 0."""
     return AdminService(get_supabase()).reembed(body)
+
+
+@router.post("/reconcile", response_model=ReconcileResponse)
+def reconcile(body: ReconcileRequest, request: Request) -> ReconcileResponse:
+    """Read-only embedding-drift report: null / model-mismatch / content-drift
+    counts for a tenant's kg_nodes. Detection only — does not re-embed."""
+    return AdminService(get_supabase()).reconcile(body)
 
 
 # ── Dedup / purge sweeps (formalize the manual cleanups; see migration 58) ──────

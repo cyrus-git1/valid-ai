@@ -158,6 +158,25 @@ class ReembedResponse(BaseModel):
     embedding_model: str
 
 
+class ReconcileRequest(BaseModel):
+    tenant_id: str
+    types: Optional[List[str]] = Field(
+        default=None, description="Node types to check, e.g. ['Observation','Concept']. None = all."
+    )
+
+
+class ReconcileResponse(BaseModel):
+    """Read-only embedding-drift report (Phase 1: detect only)."""
+    tenant_id: str
+    embedding_model: str
+    null_embedding: int    # missing vector
+    model_mismatch: int    # vector built by a different embedding model
+    content_drift: int     # text changed since the vector was built (stamped rows only)
+    unknown_hash: int      # vectored rows not yet stamped → status unknown, not counted as drift
+    total_vectorized: int
+    total_active: int
+
+
 # ── Orphan retirement / study purge ──────────────────────────────────────────
 
 
