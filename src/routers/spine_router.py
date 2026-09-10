@@ -66,6 +66,12 @@ from src.models.api.hypotheses import (
     HypothesisUpsertRequest,
     HypothesisUpsertResponse,
 )
+from src.models.api.audit_events import (
+    AuditEventRecordRequest,
+    AuditEventRecordResponse,
+    AuditEventsRequest,
+    AuditEventsResponse,
+)
 from src.models.api.canvas_events import (
     CanvasEventsRequest,
     CanvasEventsResponse,
@@ -287,6 +293,25 @@ def canvas_events(body: CanvasEventsRequest, request: Request) -> CanvasEventsRe
     """The canvas change log — status/confidence transitions for a scope."""
     tenant_id = _check_tenant_match(request, body.tenant_id)
     return SpineService(get_supabase()).canvas_events_by_scope(tenant_id, body)
+
+
+@canvas_router.post("/audit-events/record", response_model=AuditEventRecordResponse)
+def record_audit_event(body: AuditEventRecordRequest, request: Request) -> AuditEventRecordResponse:
+    """Append one /audit/survey result to the study's durable history.
+
+    Append-only and retained a year. Recording never fails the audit that produced it:
+    the service returns status="error" rather than raising, because an outage in the
+    record should not become an outage in the product.
+    """
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).record_audit_event(tenant_id, body)
+
+
+@canvas_router.post("/audit-events/list", response_model=AuditEventsResponse)
+def audit_events(body: AuditEventsRequest, request: Request) -> AuditEventsResponse:
+    """A study's audit history, newest first."""
+    tenant_id = _check_tenant_match(request, body.tenant_id)
+    return SpineService(get_supabase()).audit_events_by_scope(tenant_id, body)
 
 
 @canvas_router.post("/impact/upsert", response_model=ImpactLinkUpsertResponse)

@@ -869,6 +869,62 @@ class SpineService:
 
     # ── canvas events (change log) ───────────────────────────────────────────
 
+    def record_audit_event(self, tenant_id: str, body: "AuditEventRecordRequest") -> "AuditEventRecordResponse":
+        """Append one audit result. Never updates, because the table refuses updates.
+
+        Best-effort by contract: recording an audit must never fail the audit. A caller
+        that cannot write history should still be able to return its findings — the
+        alternative is an outage in the record turning into an outage in the product.
+        """
+        from src.models.api.audit_events import AuditEventRecordResponse
+
+        try:
+            res = self.sb.rpc(
+                "audit_event_record",
+                {
+                    "p_tenant_id": tenant_id,
+                    # Already hashed by the caller — the raw client id never arrives here.
+                    "p_client_ref": body.client_ref,
+                    "p_study_id": str(body.study_id) if body.study_id else None,
+                    "p_actor_ref": body.actor_ref,
+                    "p_request_id": body.request_id,
+                    "p_goal_version": body.goal_version,
+                    "p_alignment_score": body.alignment_score,
+                    "p_quality_score": body.quality_score,
+                    "p_status": body.status,
+                    "p_degraded": body.degraded or [],
+                    "p_finding_counts": body.finding_counts or {},
+                    "p_payload_digest": body.payload_digest,
+                },
+            ).execute()
+        except Exception:
+            logger.exception("audit_event_record failed")
+            return AuditEventRecordResponse(status="error")
+
+        new_id = res.data if isinstance(res.data, str) else None
+        return AuditEventRecordResponse(status="ok", id=new_id)
+
+    def audit_events_by_scope(self, tenant_id: str, body: "AuditEventsRequest") -> "AuditEventsResponse":
+        """A study's audit history, newest first."""
+        from src.models.api.audit_events import AuditEvent, AuditEventsResponse
+
+        try:
+            res = self.sb.rpc(
+                "audit_events_by_scope",
+                {"p_tenant_id": tenant_id,
+                 "p_client_ref": body.client_ref,
+                 "p_study_id": str(body.study_id) if body.study_id else None,
+                 "p_limit": body.limit},
+            ).execute()
+        except Exception as ex:
+            logger.exception("audit_events_by_scope failed")
+            raise HTTPException(status_code=500, detail=str(ex))
+
+        rows = res.data or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        return AuditEventsResponse(events=[AuditEvent(**r) for r in rows])
+
     def canvas_events_by_scope(self, tenant_id: str, body: "CanvasEventsRequest") -> "CanvasEventsResponse":
         from src.models.api.canvas_events import CanvasEvent, CanvasEventsResponse
 
