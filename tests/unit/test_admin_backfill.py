@@ -141,7 +141,7 @@ def test_reembed_fills_null_embedding_rows(client):
         {"id": "11111111-0000-0000-0000-000000000002", "node_type": "Concept", "embed_text": "Pricing"},
     ])
     fake.set_rpc("reembed_apply_batch", 2)
-    fake.set_table_count(0)   # nothing left after this sweep
+    fake.set_rpc("reconcile_report", {"null_embedding": 0, "model_mismatch": 0, "content_drift": 0})  # nothing left
     r = c.post("/admin/reembed", json={"tenant_id": TENANT, "types": ["Observation", "Concept"], "limit": 100})
     assert r.status_code == 200, r.text
     body = r.json()
@@ -150,12 +150,14 @@ def test_reembed_fills_null_embedding_rows(client):
     call = fake.calls("reembed_apply_batch")[0]
     assert len(call["p_ids"]) == 2
     assert len(call["p_embeddings"]) == 2 and len(call["p_embeddings"][0]) == 1536
+    # Phase 2: candidate selection carries the target model (so model_mismatch heals)
+    assert fake.calls("reembed_candidates")[0]["p_target_model"] == "text-embedding-3-small"
 
 
 def test_reembed_no_candidates_is_noop(client):
     c, fake = client
     fake.set_rpc("reembed_candidates", [])
-    fake.set_table_count(0)
+    fake.set_rpc("reconcile_report", {"null_embedding": 0, "model_mismatch": 0, "content_drift": 0})
     r = c.post("/admin/reembed", json={"tenant_id": TENANT})
     assert r.status_code == 200
     body = r.json()
@@ -169,7 +171,7 @@ def test_reembed_reports_remaining_for_chunked_backfill(client):
         {"id": "11111111-0000-0000-0000-000000000003", "node_type": "Observation", "embed_text": "x"},
     ])
     fake.set_rpc("reembed_apply_batch", 1)
-    fake.set_table_count(42)   # more remain → caller re-runs
+    fake.set_rpc("reconcile_report", {"null_embedding": 40, "model_mismatch": 0, "content_drift": 2})  # 42 remain across classes
     r = c.post("/admin/reembed", json={"tenant_id": TENANT, "limit": 1})
     assert r.status_code == 200
     assert r.json()["remaining"] == 42

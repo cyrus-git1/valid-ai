@@ -315,7 +315,8 @@ class AdminService:
         sb = self.sb
         cands = (sb.rpc(
             "reembed_candidates",
-            {"p_tenant_id": tenant_id, "p_types": types, "p_limit": body.limit},
+            {"p_tenant_id": tenant_id, "p_types": types,
+             "p_target_model": _EMBED_MODEL, "p_limit": body.limit},
         ).execute().data) or []
         scanned = len(cands)
 
@@ -339,10 +340,15 @@ class AdminService:
             ).execute().data
             reembedded = int(_rpc_scalar(applied) or 0)
 
-        q = sb.table("kg_nodes").select("id", count="exact").eq("tenant_id", tenant_id).is_("embedding", "null")
-        if types:
-            q = q.in_("type", types)
-        remaining = q.execute().count or 0
+        # remaining = all drift classes still needing a heal (null + model + drift),
+        # so "re-run until remaining is 0" holds for the whole reconcile surface.
+        rep = _rpc_scalar(sb.rpc(
+            "reconcile_report",
+            {"p_tenant_id": tenant_id, "p_types": types, "p_target_model": _EMBED_MODEL},
+        ).execute().data) or {}
+        remaining = (int(rep.get("null_embedding", 0))
+                     + int(rep.get("model_mismatch", 0))
+                     + int(rep.get("content_drift", 0)))
 
         logger.info("admin.reembed tenant=%s scanned=%d reembedded=%d remaining=%d", tenant_id, scanned, reembedded, remaining)
         return ReembedResponse(
