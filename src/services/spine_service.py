@@ -895,6 +895,7 @@ class SpineService:
                     "p_degraded": body.degraded or [],
                     "p_finding_counts": body.finding_counts or {},
                     "p_payload_digest": body.payload_digest,
+                    "p_summary": body.summary,
                 },
             ).execute()
         except Exception:

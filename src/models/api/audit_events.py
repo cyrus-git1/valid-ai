@@ -75,6 +75,14 @@ class AuditEventRecordRequest(_AuditScope):
             "without storing a survey copy per audit."
         ),
     )
+    summary: Optional[str] = Field(
+        default=None,
+        description=(
+            "The audit's own one-line conclusion. Stored because a trend of scores with "
+            "no words is barely readable; the FULL result still is not, because that is a "
+            "survey copy per audit rather than a sentence."
+        ),
+    )
 
 
 class AuditEventRecordResponse(BaseModel):
@@ -102,6 +110,7 @@ class AuditEvent(BaseModel):
     degraded: List[str] = Field(default_factory=list)
     finding_counts: Dict[str, Any] = Field(default_factory=dict)
     payload_digest: Optional[str] = None
+    summary: Optional[str] = None
 
 
 class AuditEventsResponse(BaseModel):
