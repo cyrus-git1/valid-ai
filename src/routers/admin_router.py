@@ -18,7 +18,12 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from src.db.supabase_client import get_supabase
+from src.models.api.audit_events import (
+    AuditEventsPurgeResponse,
+    AuditRetentionStatus,
+)
 from src.services.admin_service import AdminService
+from src.services.spine_service import SpineService
 from src.models.api.admin import (
     ApiKeyCreateRequest,
     ApiKeyCreateResponse,
@@ -188,3 +193,35 @@ def purge_study(body: PurgeStudyRequest, request: Request) -> PurgeStudyResponse
 def run_maintenance(req: MaintenanceRunRequest) -> MaintenanceRunResponse:
     """Run KG pruning and orphan cleanup for one client or every client in a tenant."""
     return AdminService(get_supabase()).run_maintenance(req)
+
+
+# ── Audit-history retention ────────────────────────────────────────────────────
+# The one-year window is a promise, and a promise nobody can check is a docstring. These
+# two make it checkable: one enforces, one reports. Both are cross-tenant, because
+# retention is a property of the table rather than of a caller — admin scope is the gate.
+
+
+@router.get("/audit-events/retention", response_model=AuditRetentionStatus)
+def audit_retention(request: Request) -> AuditRetentionStatus:
+    """Is the one-year window holding? `expired_count` should always be 0.
+
+    Read-only and cheap, so it is safe to poll and to alert on. A non-zero count means
+    retention is NOT holding, whatever the reason — schedule never installed, installed
+    and erroring, or running and falling behind. That is the alertable fact; when the
+    purge last fired is not.
+    """
+    _require_admin(request)
+    return SpineService(get_supabase()).audit_retention_status()
+
+
+@router.post("/audit-events/purge", response_model=AuditEventsPurgeResponse)
+def audit_purge(request: Request) -> AuditEventsPurgeResponse:
+    """Delete audit rows past the one-year window; returns the count and the new status.
+
+    Where pg_cron exists, migration 76 already runs this daily and this endpoint is a
+    manual backstop. Where it does not, this IS the retention mechanism and something
+    must call it. Either way the append-only trigger refuses to delete anything still
+    inside the window, so this cannot remove a retained row.
+    """
+    _require_admin(request)
+    return SpineService(get_supabase()).audit_events_purge()

@@ -106,3 +106,29 @@ class AuditEvent(BaseModel):
 
 class AuditEventsResponse(BaseModel):
     events: List[AuditEvent] = Field(default_factory=list)
+
+
+class AuditRetentionStatus(BaseModel):
+    """Is the one-year window actually holding?
+
+    `expired_count` is the number that matters and it should always be 0. Deliberately
+    not a last-ran timestamp: that tells you the purge fired, not that it is keeping up,
+    and the two come apart exactly when it matters. A non-zero count is true whether the
+    schedule was never installed, installed and errored, or ran and fell behind.
+    """
+
+    total_count: int = 0
+    expired_count: int = 0
+    oldest_occurred_at: Optional[str] = None
+    window_starts_at: Optional[str] = None
+
+
+class AuditEventsPurgeResponse(BaseModel):
+    """What the purge removed, plus where retention stands afterwards.
+
+    Returning the post-purge status means one call answers both "did it work" and "is it
+    now clean", so a scheduler's log line is enough to audit the control.
+    """
+
+    deleted: int = 0
+    status: AuditRetentionStatus = Field(default_factory=AuditRetentionStatus)

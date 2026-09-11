@@ -925,6 +925,44 @@ class SpineService:
             rows = [rows]
         return AuditEventsResponse(events=[AuditEvent(**r) for r in rows])
 
+    def audit_retention_status(self) -> "AuditRetentionStatus":
+        """Is the one-year window holding? Cross-tenant and read-only.
+
+        Raises rather than degrading to zeros. A retention check that answers "0 expired"
+        because it failed is worse than no check at all — it is the reassuring-but-wrong
+        answer, which is the failure this whole subsystem exists to stop repeating.
+        """
+        from src.models.api.audit_events import AuditRetentionStatus
+
+        try:
+            res = self.sb.rpc("audit_events_retention_status", {}).execute()
+        except Exception as ex:
+            logger.exception("audit_events_retention_status failed")
+            raise HTTPException(status_code=500, detail=str(ex))
+
+        row = res.data
+        if isinstance(row, list):
+            row = row[0] if row else {}
+        return AuditRetentionStatus(**(row or {}))
+
+    def audit_events_purge(self) -> "AuditEventsPurgeResponse":
+        """Delete audit rows past the one-year window, and report where that leaves us.
+
+        Cross-tenant by design: retention is a property of the table, not of a caller.
+        The append-only trigger refuses any delete inside the window, so this cannot
+        remove a row that is still retained even if called with the wrong intent.
+        """
+        from src.models.api.audit_events import AuditEventsPurgeResponse
+
+        try:
+            res = self.sb.rpc("audit_events_purge_expired", {}).execute()
+        except Exception as ex:
+            logger.exception("audit_events_purge_expired failed")
+            raise HTTPException(status_code=500, detail=str(ex))
+
+        deleted = res.data if isinstance(res.data, int) else 0
+        return AuditEventsPurgeResponse(deleted=deleted, status=self.audit_retention_status())
+
     def canvas_events_by_scope(self, tenant_id: str, body: "CanvasEventsRequest") -> "CanvasEventsResponse":
         from src.models.api.canvas_events import CanvasEvent, CanvasEventsResponse
 
