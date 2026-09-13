@@ -42,6 +42,24 @@
 -- is every upsert against an unpinned block: both take the same `else` branch
 -- they take today.
 --
+-- ONE TRADEOFF, MADE DELIBERATELY. `status` is frozen on a pinned block, and it
+-- is not purely a claim: `refresh_canvas` derives it from evidence
+-- (validated / refined / assumption, from has_support / has_counter), so
+-- freezing it means a human-pinned claim cannot be shown as validated by
+-- evidence that supports it. The reason it is frozen anyway is that this
+-- function cannot tell the two agent writers apart — both arrive as
+-- source='agent' — and the other one, `generate_canvas`, sends a flat
+-- status='assumption' with no evidence behind it at all. Letting status through
+-- to serve the first writer readmits the downgrade from the second.
+--
+-- Of the two failures, the frozen one is the safer and the more visible: the
+-- user sees their own claim sitting at 'assumption' and can move it themselves
+-- via /canvas/block, which already accepts `status`. The alternative fails
+-- silently and in the direction of losing their work. If evidence-driven status
+-- on pinned blocks turns out to matter, the fix is to let the evidence writer
+-- say so — a `p_status_is_evidenced` flag, or a separate entry point — not to
+-- reopen this branch.
+--
 -- Also holds the EMBEDDING back on a protected upsert. The caller embeds
 -- `body.statement`, so an agent refresh carrying its own statement would store
 -- the agent text's vector against the human's `name` — leaving the block
